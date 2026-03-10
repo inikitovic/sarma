@@ -231,12 +231,12 @@ $p = Parse-Args $remaining
 switch ($command) {
     "submit" {
         $reviewers = if ($p["reviewer"]) { @($p["reviewer"]) } else { @() }
-        Invoke-Submit -Prompt $p["prompt"] -Repo $p["repo"] -Branch ($p["branch"] ?? "main") -TaskType ($p["type"] ?? "backend") -Reviewer $reviewers
+        Invoke-Submit -Prompt $p["prompt"] -Repo $p["repo"] -Branch ($p["branch"] ?? "") -TaskType ($p["type"] ?? "backend") -Reviewer $reviewers
     }
     "delegate" {
         $wiId = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
         $reviewers = if ($p["reviewer"]) { @($p["reviewer"]) } else { @() }
-        Invoke-Delegate -WorkItemId $wiId -Repo $p["repo"] -Branch ($p["branch"] ?? "main") -TaskType ($p["type"] ?? "backend") -Reviewer $reviewers
+        Invoke-Delegate -WorkItemId $wiId -Repo $p["repo"] -Branch ($p["branch"] ?? "") -TaskType ($p["type"] ?? "backend") -Reviewer $reviewers
     }
     "status" { Invoke-Status -Filter $p["filter"] }
     "logs"   { Invoke-Logs -TaskId ($p["_positional"][0]) }
