@@ -36,9 +36,13 @@ function Invoke-CopilotAgent {
         Write-Host "    ─── agency copilot session ───" -ForegroundColor DarkCyan
         $startTime = Get-Date
 
-        # Read prompt from file and run inline
-        $promptText = Get-Content $promptFile -Raw
-        & agency copilot --prompt $promptText --autopilot --allow-all
+        # Write full task details to a file the agent can read
+        $taskFile = Join-Path $WorkDir ".sarma-task.md"
+        $Prompt | Set-Content -Path $taskFile -Encoding UTF8
+
+        # Keep the CLI prompt short — point to the task file for details
+        $shortPrompt = "Read the task file .sarma-task.md in the current directory and complete the work described in it. Follow all instructions exactly."
+        & agency copilot --prompt $shortPrompt --autopilot --allow-all
         $exitCode = $LASTEXITCODE
 
         $endTime = Get-Date
@@ -48,6 +52,7 @@ function Invoke-CopilotAgent {
     } finally {
         Set-Location $prevDir
         Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $WorkDir ".sarma-task.md") -Force -ErrorAction SilentlyContinue
     }
 
     return [PSCustomObject]@{
