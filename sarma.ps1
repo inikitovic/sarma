@@ -52,7 +52,7 @@ function Invoke-Submit {
     param(
         [string]$Prompt,
         [string]$Repo,
-        [string]$Branch = "main",
+        [string]$Branch = "",
         [string]$TaskType = "backend",
         [string[]]$Reviewer = @()
     )
@@ -63,7 +63,7 @@ function Invoke-Submit {
     $task = @{
         id            = $id
         repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
-        branch        = $Branch
+        branch        = if ($Branch) { $Branch } else { $script:SarmaConfig.DefaultBranch }
         taskType      = $TaskType
         prompt        = $Prompt
         status        = "pending"
@@ -89,7 +89,7 @@ function Invoke-Delegate {
     param(
         [int]$WorkItemId,
         [string]$Repo,
-        [string]$Branch = "main",
+        [string]$Branch = "",
         [string]$TaskType = "backend",
         [string[]]$Reviewer = @()
     )
@@ -108,7 +108,7 @@ function Invoke-Delegate {
     $task = @{
         id            = $id
         repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
-        branch        = $Branch
+        branch        = if ($Branch) { $Branch } else { $script:SarmaConfig.DefaultBranch }
         taskType      = $TaskType
         prompt        = $prompt
         status        = "pending"
@@ -262,3 +262,4 @@ switch ($command) {
         Write-Host "  .\sarma.ps1 logs <task-id>"
     }
 }
+

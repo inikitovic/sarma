@@ -47,8 +47,10 @@ function New-Worktree {
     param(
         [Parameter(Mandatory)][string]$RepoPath,
         [Parameter(Mandatory)][string]$BranchName,
-        [string]$BaseBranch = "main"
+        [string]$BaseBranch = ""
     )
+
+    if (-not $BaseBranch) { $BaseBranch = $script:SarmaConfig.DefaultBranch }
 
     $wtDir = $script:SarmaConfig.WorktreeDir
     $safeName = $BranchName -replace "/", "-"
