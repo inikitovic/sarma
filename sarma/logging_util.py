@@ -12,6 +12,14 @@ from logging.handlers import RotatingFileHandler
 from sarma.config import cfg
 
 
+class FlushStreamHandler(logging.StreamHandler):
+    """StreamHandler that flushes after every emit (fixes conda run buffering)."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        super().emit(record)
+        self.flush()
+
+
 class JsonFormatter(logging.Formatter):
     """Emit log records as single-line JSON."""
 
@@ -39,8 +47,8 @@ def get_logger(name: str = "sarma") -> logging.Logger:
 
     logger.setLevel(logging.DEBUG)
 
-    # Console handler — human-readable
-    console = logging.StreamHandler(sys.stdout)
+    # Console handler — human-readable, flushes immediately
+    console = FlushStreamHandler(sys.stderr)
     console.setLevel(logging.INFO)
     console.setFormatter(
         logging.Formatter("[%(asctime)s] %(levelname)-7s %(message)s", datefmt="%H:%M:%S")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -37,24 +38,40 @@ class CopilotExecutor(BaseExecutor):
         self,
         cli_cmd: str | None = None,
         timeout: int | None = None,
+        live: bool = False,
     ):
         self.cli_cmd = cli_cmd or cfg.COPILOT_CLI_CMD
         self.timeout = timeout or cfg.EXECUTOR_TIMEOUT
+        self.live = live
 
     def run(self, prompt: str, workdir: str) -> ExecutionResult:
         try:
-            proc = subprocess.run(
-                [self.cli_cmd, "--prompt", prompt],
-                cwd=workdir,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-            )
-            return ExecutionResult(
-                exit_code=proc.returncode,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-            )
+            if self.live:
+                # Stream output directly to terminal (interactive mode)
+                proc = subprocess.run(
+                    [self.cli_cmd, "--prompt", prompt],
+                    cwd=workdir,
+                    text=True,
+                    timeout=self.timeout,
+                )
+                return ExecutionResult(
+                    exit_code=proc.returncode,
+                    stdout="(live output — see terminal)",
+                    stderr="",
+                )
+            else:
+                proc = subprocess.run(
+                    [self.cli_cmd, "--prompt", prompt],
+                    cwd=workdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                )
+                return ExecutionResult(
+                    exit_code=proc.returncode,
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                )
         except subprocess.TimeoutExpired:
             return ExecutionResult(
                 exit_code=-1,

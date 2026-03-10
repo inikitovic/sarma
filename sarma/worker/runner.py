@@ -46,7 +46,10 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
     _current_task_id = task.id
 
     log_extra = {"task_id": task.id}
-    logger.info("Starting task %s [%s]", task.id[:8], task.task_type, extra=log_extra)
+    logger.info("═══ Task %s [%s] ═══", task.id[:8], task.task_type, extra=log_extra)
+    logger.info("  Prompt: %s", task.prompt[:120], extra=log_extra)
+    logger.info("  Repo:   %s", task.repo, extra=log_extra)
+    logger.info("  Branch: %s → %s", task.branch, task.result_branch, extra=log_extra)
 
     now = datetime.now(timezone.utc).isoformat()
     update_status(task.id, "running", worker_id=cfg.WORKER_ID, started_at=now)
@@ -54,18 +57,23 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
     start = time.monotonic()
     try:
         # 1. Clone / fetch the repo
+        logger.info("  [1/5] Cloning / fetching repo…", extra=log_extra)
         repo_path = clone_or_fetch(task.repo)
+        logger.info("  [1/5] ✓ Repo ready at %s", repo_path, extra=log_extra)
 
         # 2. Create an isolated worktree
+        logger.info("  [2/5] Creating worktree %s…", task.result_branch, extra=log_extra)
         wt_path = create_worktree(repo_path, task.result_branch, task.branch)
+        logger.info("  [2/5] ✓ Worktree at %s", wt_path, extra=log_extra)
 
         try:
             # 3. Run the agent
+            logger.info("  [3/5] Running executor (%s)…", executor.cli_cmd, extra=log_extra)
             result = executor.run(task.prompt, wt_path)
             logger.info(
-                "Executor finished (rc=%d) for %s",
+                "  [3/5] %s Executor finished (rc=%d)",
+                "✓" if result.success else "✗",
                 result.exit_code,
-                task.id[:8],
                 extra={**log_extra, "exit_code": result.exit_code},
             )
 
@@ -73,9 +81,12 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
                 raise RuntimeError(f"Executor failed (rc={result.exit_code}): {result.stderr[:500]}")
 
             # 4. Commit and push
+            logger.info("  [4/5] Committing and pushing…", extra=log_extra)
             commit_and_push(wt_path, task.commit_message, task.result_branch)
+            logger.info("  [4/5] ✓ Pushed to %s", task.result_branch, extra=log_extra)
 
             # 5. Create PR
+            logger.info("  [5/5] Creating PR…", extra=log_extra)
             repo_name = task.repo.rstrip("/").split("/")[-1].removesuffix(".git")
             pr = create_pull_request(
                 repo=repo_name,
@@ -87,14 +98,14 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
                 org=task.ado_org,
                 project=task.ado_project,
             )
-            logger.info("PR created: %s", pr.get("pullRequestId", "?"), extra=log_extra)
+            logger.info("  [5/5] ✓ PR #%s created", pr.get("pullRequestId", "?"), extra=log_extra)
 
             # 6. Mark completed
             elapsed = round(time.monotonic() - start, 1)
             done_at = datetime.now(timezone.utc).isoformat()
             update_status(task.id, "completed", completed_at=done_at)
             logger.info(
-                "Task %s completed in %.1fs", task.id[:8], elapsed,
+                "═══ Task %s COMPLETED in %.1fs ═══", task.id[:8], elapsed,
                 extra={**log_extra, "duration": elapsed, "status": "completed"},
             )
         finally:
@@ -105,7 +116,7 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
         done_at = datetime.now(timezone.utc).isoformat()
         update_status(task.id, "failed", completed_at=done_at, error=str(exc)[:500])
         logger.error(
-            "Task %s failed after %.1fs: %s", task.id[:8], elapsed, exc,
+            "═══ Task %s FAILED after %.1fs: %s ═══", task.id[:8], elapsed, exc,
             extra={**log_extra, "duration": elapsed, "status": "failed"},
         )
     finally:
@@ -115,18 +126,20 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
 @click.command()
 @click.option("--types", default=None, help="Comma-separated task types to consume.")
 @click.option("--concurrency", default=None, type=int, help="Max concurrent tasks (reserved for future use).")
-def main(types: str | None, concurrency: int | None) -> None:
+@click.option("--live", is_flag=True, help="Stream executor output to terminal (interactive mode).")
+def main(types: str | None, concurrency: int | None, live: bool) -> None:
     """Start a Sarma worker that polls the task queue."""
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
     task_types = types.split(",") if types else cfg.WORKER_TASK_TYPES
-    logger.info("Worker %s starting — types=%s", cfg.WORKER_ID, task_types)
+    logger.info("Worker %s starting — types=%s, live=%s", cfg.WORKER_ID, task_types, live)
 
     register_worker(cfg.WORKER_ID)
-    executor = CopilotExecutor()
+    executor = CopilotExecutor(live=live)
 
     try:
+        logger.info("Polling for tasks…")
         while not _shutdown:
             heartbeat(cfg.WORKER_ID)
             task = pop_task(task_types=task_types)
