@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import click
 
 from sarma.config import cfg
@@ -132,6 +136,59 @@ def prune(completed: bool, failed: bool, prune_all: bool) -> None:
             pruned += 1
 
     click.echo(f"🗑️  Pruned {pruned} task(s).")
+
+
+@cli.command()
+@click.argument("worker_or_task")
+@click.option("--user", default=None, help="SSH username (default: current user).")
+@click.option("--method", default="ssh", type=click.Choice(["ssh", "rdp", "devbox"]), help="Connection method.")
+def attach(worker_or_task: str, user: str | None, method: str) -> None:
+    """Attach to a Dev Box worker's terminal via SSH/RDP.
+
+    WORKER_OR_TASK can be a worker ID (hostname) or a task ID.
+    If a task ID is given, resolves to the worker running it.
+
+    Examples:
+
+      sarma attach CPC-iniki-JIZGB
+
+      sarma attach ec76c20d-8bec-40eb-9304-db40f0635556
+
+      sarma attach CPC-iniki-JIZGB --method rdp
+    """
+    # Resolve task ID to worker hostname
+    target = worker_or_task
+    task = get_task(worker_or_task)
+    if task and task.worker_id:
+        click.echo(f"Task {worker_or_task[:8]} is on worker: {task.worker_id}")
+        target = task.worker_id
+    elif task and not task.worker_id:
+        click.echo(f"Task {worker_or_task[:8]} has no assigned worker yet.")
+        return
+
+    user = user or os.environ.get("USERNAME") or os.environ.get("USER") or "azureuser"
+
+    if method == "ssh":
+        click.echo(f"Connecting via SSH to {target} as {user}…")
+        cmd = ["ssh", f"{user}@{target}"]
+        os.execvp("ssh", cmd)
+
+    elif method == "rdp":
+        click.echo(f"Opening RDP to {target}…")
+        if sys.platform == "win32":
+            subprocess.run(["mstsc", f"/v:{target}"], check=False)
+        else:
+            click.echo(f"Run: xfreerdp /v:{target} /u:{user}")
+
+    elif method == "devbox":
+        click.echo(f"Connecting via Dev Box CLI to {target}…")
+        cmd = ["az", "network", "bastion", "ssh",
+               "--name", os.environ.get("BASTION_NAME", ""),
+               "--resource-group", os.environ.get("BASTION_RG", ""),
+               "--target-resource-id", target,
+               "--auth-type", "AAD"]
+        click.echo(f"  {' '.join(cmd)}")
+        os.execvp("az", cmd)
 
 
 if __name__ == "__main__":
