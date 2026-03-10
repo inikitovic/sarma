@@ -28,8 +28,8 @@ def _create_entra_credential_provider():
             import json, base64
             try:
                 payload = token.token.split(".")[1]
-                payload += "=" * (-len(payload) % 4)  # pad base64
-                claims = json.loads(base64.b64decode(payload))
+                payload += "=" * (4 - len(payload) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(payload))
                 username = claims.get("oid", "default")
             except Exception:
                 username = os.environ.get("AZURE_CLIENT_ID", "default")
