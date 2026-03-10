@@ -21,6 +21,7 @@ from sarma.queue import (
 )
 from sarma.worker.executor import CopilotExecutor
 from sarma.worker.git_ops import (
+    _run_git,
     cleanup_worktree,
     clone_or_fetch,
     commit_and_push,
@@ -56,10 +57,16 @@ def _process_task(task: Task, executor: CopilotExecutor) -> None:
 
     start = time.monotonic()
     try:
-        # 1. Clone / fetch the repo
-        logger.info("  [1/5] Cloning / fetching repo…", extra=log_extra)
-        repo_path = clone_or_fetch(task.repo)
-        logger.info("  [1/5] ✓ Repo ready at %s", repo_path, extra=log_extra)
+        # 1. Get repo path (use local if available, otherwise clone)
+        if cfg.LOCAL_REPO_PATH:
+            repo_path = cfg.LOCAL_REPO_PATH
+            logger.info("  [1/5] Using local repo at %s", repo_path, extra=log_extra)
+            _run_git("fetch", "--all", "--prune", cwd=repo_path)
+            logger.info("  [1/5] ✓ Fetched latest", extra=log_extra)
+        else:
+            logger.info("  [1/5] Cloning / fetching repo…", extra=log_extra)
+            repo_path = clone_or_fetch(task.repo)
+            logger.info("  [1/5] ✓ Repo ready at %s", repo_path, extra=log_extra)
 
         # 2. Create an isolated worktree
         logger.info("  [2/5] Creating worktree %s…", task.result_branch, extra=log_extra)

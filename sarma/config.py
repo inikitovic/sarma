@@ -27,6 +27,9 @@ class Config:
         "https://dev.azure.com/msdata/Database%20Systems/_git/DsMainDev",
     )
 
+    # Local repo path — if set, worker uses this instead of cloning
+    LOCAL_REPO_PATH: str = os.getenv("SARMA_LOCAL_REPO", "")
+
     # Copilot CLI
     COPILOT_CLI_CMD: str = os.getenv("COPILOT_CLI_CMD", "copilot-cli")
 
