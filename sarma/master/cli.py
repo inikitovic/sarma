@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import html
 import os
+import re
 import subprocess
 import sys
 
 import click
+import requests
 
 from sarma.config import cfg
 from sarma.models import Task
@@ -19,13 +23,38 @@ from sarma.queue import (
 )
 
 
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and decode entities."""
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<li>", "- ", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    return html.unescape(text).strip()
+
+
+def _fetch_work_item(work_item_id: int) -> dict:
+    """Fetch a work item from Azure DevOps REST API."""
+    pat = cfg.AZURE_DEVOPS_PAT
+    if not pat:
+        raise click.ClickException("AZURE_DEVOPS_PAT is required to fetch work items")
+
+    token = base64.b64encode(f":{pat}".encode()).decode()
+    headers = {"Authorization": f"Basic {token}"}
+    url = (
+        f"https://dev.azure.com/{cfg.ADO_ORG}/{cfg.ADO_WIT_PROJECT}"
+        f"/_apis/wit/workitems/{work_item_id}?api-version=7.1"
+    )
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
 @click.group()
 def cli() -> None:
     """Sarma Launcher — distributed coding task orchestrator."""
 
 
 @cli.command()
-@click.option("--repo", required=True, help="Repository clone URL.")
+@click.option("--repo", default=None, help="Repository clone URL (default: from config).")
 @click.option("--branch", default="main", help="Base branch to fork from.")
 @click.option("--type", "task_type", default="backend", type=click.Choice(["backend", "frontend", "test", "docs"]), help="Task type for routing.")
 @click.option("--prompt", required=True, help="Agent prompt describing the task.")
@@ -33,7 +62,7 @@ def cli() -> None:
 @click.option("--ado-org", default=None, help="Override ADO organization.")
 @click.option("--ado-project", default=None, help="Override ADO project.")
 def submit(
-    repo: str,
+    repo: str | None,
     branch: str,
     task_type: str,
     prompt: str,
@@ -43,7 +72,7 @@ def submit(
 ) -> None:
     """Submit a new task to the sarma queue."""
     task = Task(
-        repo=repo,
+        repo=repo or cfg.DEFAULT_REPO,
         branch=branch,
         task_type=task_type,
         prompt=prompt,
@@ -54,6 +83,60 @@ def submit(
     task_id = push_task(task)
     click.echo(f"✅ Task submitted: {task_id}")
     click.echo(f"   Type: {task_type} | Branch: {task.result_branch}")
+
+
+@cli.command()
+@click.argument("work_item_id", type=int)
+@click.option("--repo", default=None, help="Repository clone URL (default: from config).")
+@click.option("--branch", default="main", help="Base branch to fork from.")
+@click.option("--type", "task_type", default="backend", type=click.Choice(["backend", "frontend", "test", "docs"]), help="Task type for routing.")
+@click.option("--reviewer", multiple=True, help="Reviewer alias(es) for the PR.")
+def delegate(
+    work_item_id: int,
+    repo: str | None,
+    branch: str,
+    task_type: str,
+    reviewer: tuple[str, ...],
+) -> None:
+    """Delegate an ADO work item to a worker.
+
+    Fetches the work item title and description, uses them as the agent prompt.
+
+    Example:
+
+      sarma delegate 4946264
+
+      sarma delegate 4946264 --type test --reviewer tisonjic@microsoft.com
+    """
+    click.echo(f"Fetching work item #{work_item_id}…")
+    wi = _fetch_work_item(work_item_id)
+    fields = wi.get("fields", {})
+
+    title = fields.get("System.Title", "")
+    description = _strip_html(fields.get("System.Description", ""))
+    wi_type = fields.get("System.WorkItemType", "")
+    state = fields.get("System.State", "")
+
+    click.echo(f"  Title: {title}")
+    click.echo(f"  Type:  {wi_type} | State: {state}")
+
+    prompt = f"Work Item #{work_item_id}: {title}\n\n{description}"
+
+    task = Task(
+        repo=repo or cfg.DEFAULT_REPO,
+        branch=branch,
+        task_type=task_type,
+        prompt=prompt,
+        work_item_id=work_item_id,
+        pr_options={
+            "title": f"[#{work_item_id}] {title}",
+            "description": f"Auto-generated from work item #{work_item_id}\n\n{description[:500]}",
+            "reviewers": list(reviewer),
+        },
+    )
+    task_id = push_task(task)
+    click.echo(f"✅ Delegated: {task_id}")
+    click.echo(f"   Branch: {task.result_branch}")
 
 
 @cli.command()

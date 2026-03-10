@@ -18,7 +18,14 @@ class Config:
     # Azure DevOps defaults
     ADO_ORG: str = os.getenv("ADO_ORG", "msdata")
     ADO_PROJECT: str = os.getenv("ADO_PROJECT", "Database Systems")
+    ADO_WIT_PROJECT: str = os.getenv("ADO_WIT_PROJECT", "Azure SQL Data Warehouse")
     AZURE_DEVOPS_PAT: str = os.getenv("AZURE_DEVOPS_PAT", "")
+
+    # Default repo URL (built from components to avoid URL encoding issues)
+    DEFAULT_REPO: str = os.getenv(
+        "SARMA_DEFAULT_REPO",
+        "https://dev.azure.com/msdata/Database%20Systems/_git/DsMainDev",
+    )
 
     # Copilot CLI
     COPILOT_CLI_CMD: str = os.getenv("COPILOT_CLI_CMD", "copilot-cli")

@@ -36,6 +36,9 @@ class Task(BaseModel):
     ado_org: Optional[str] = None
     ado_project: Optional[str] = None
 
+    # Work item reference
+    work_item_id: Optional[int] = None
+
     # Runtime fields
     worker_id: Optional[str] = None
     created_at: str = Field(
