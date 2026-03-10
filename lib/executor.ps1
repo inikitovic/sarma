@@ -1,10 +1,11 @@
-# lib\executor.ps1 — Launch agency copilot in a new pwsh window
+# lib\executor.ps1 — Run agency copilot inline in the current terminal
 
 function Invoke-CopilotAgent {
     <#
     .SYNOPSIS
-        Launch agency copilot in a new PowerShell 7 window with autopilot mode.
+        Run agency copilot in the current terminal with autopilot mode.
         The agent handles everything: code changes, commit, push, and PR creation.
+        After the agent exits, control returns to the worker.
     #>
     param(
         [Parameter(Mandatory)][string]$Prompt,
@@ -24,76 +25,35 @@ function Invoke-CopilotAgent {
         }
     }
 
-    # Write prompt to a temp file (avoids quoting/escaping issues)
+    # Write prompt to a temp file (avoids quoting/escaping issues with long prompts)
     $promptFile = Join-Path $WorkDir ".sarma-prompt.txt"
     $Prompt | Set-Content -Path $promptFile -Encoding UTF8
 
-    # Build the command to run in the new window
-    # Agency copilot reads the prompt, runs autonomously, then writes a result file
-    $resultFile = Join-Path $WorkDir ".sarma-result.json"
-    $escapedWorkDir = $WorkDir -replace "'", "''"
-    $escapedPromptFile = $promptFile -replace "'", "''"
-    $escapedResultFile = $resultFile -replace "'", "''"
+    $prevDir = Get-Location
+    try {
+        Set-Location $WorkDir
 
-    $innerCommand = @"
-Set-Location '$escapedWorkDir'
-`$prompt = Get-Content '$escapedPromptFile' -Raw
-`$startTime = Get-Date -Format o
-Write-Host '═══ Sarma Agent Session ═══' -ForegroundColor Cyan
-Write-Host "Prompt: `$(`$prompt.Substring(0, [Math]::Min(200, `$prompt.Length)))..." -ForegroundColor DarkGray
-Write-Host ''
+        Write-Host "    ─── agency copilot session ───" -ForegroundColor DarkCyan
+        $startTime = Get-Date
 
-agency copilot --prompt `$prompt --autopilot --allow-all
-`$exitCode = `$LASTEXITCODE
-`$endTime = Get-Date -Format o
+        # Read prompt from file and run inline
+        $promptText = Get-Content $promptFile -Raw
+        & agency copilot --prompt $promptText --autopilot --allow-all
+        $exitCode = $LASTEXITCODE
 
-# Write result file for the worker to pick up
-@{
-    exitCode  = `$exitCode
-    startTime = `$startTime
-    endTime   = `$endTime
-    success   = (`$exitCode -eq 0)
-} | ConvertTo-Json | Set-Content '$escapedResultFile' -Encoding UTF8
+        $endTime = Get-Date
+        $duration = [Math]::Round(($endTime - $startTime).TotalSeconds, 1)
+        Write-Host "    ─── session ended (${duration}s, rc=$exitCode) ───" -ForegroundColor DarkCyan
 
-if (`$exitCode -eq 0) {
-    Write-Host '' 
-    Write-Host '═══ Agent completed successfully ═══' -ForegroundColor Green
-} else {
-    Write-Host ''
-    Write-Host "═══ Agent failed (exit code `$exitCode) ═══" -ForegroundColor Red
-}
-
-Start-Sleep -Seconds 3
-"@
-
-    # Launch in a new pwsh window
-    $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', $innerCommand `
-        -PassThru
-
-    Write-Host "    Agent launched in window (PID: $($proc.Id))" -ForegroundColor DarkGray
-
-    # Wait for the process to exit
-    $proc.WaitForExit()
-
-    # Read result file if it exists
-    if (Test-Path $resultFile) {
-        $result = Get-Content $resultFile -Raw | ConvertFrom-Json
-        Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+    } finally {
+        Set-Location $prevDir
         Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
-        return [PSCustomObject]@{
-            ExitCode = $result.exitCode
-            Stdout   = "Agent session: $($result.startTime) → $($result.endTime)"
-            Stderr   = ""
-            Success  = $result.success
-        }
     }
 
-    # Fallback — no result file (window was closed manually)
-    Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
     return [PSCustomObject]@{
-        ExitCode = $proc.ExitCode
-        Stdout   = "Agent window closed"
+        ExitCode = $exitCode
+        Stdout   = "Agent session: ${duration}s"
         Stderr   = ""
-        Success  = ($proc.ExitCode -eq 0)
+        Success  = ($exitCode -eq 0)
     }
 }
