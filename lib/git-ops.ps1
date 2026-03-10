@@ -21,7 +21,7 @@ function Initialize-Repo {
     $localPath = $script:SarmaConfig.LocalRepo
     if ($localPath -and (Test-Path "$localPath\.git")) {
         Write-Host "    Using local repo: $localPath" -ForegroundColor DarkGray
-        Invoke-Git -GitArgs @("fetch", "--all", "--prune") -WorkDir $localPath
+        $null = Invoke-Git -GitArgs @("fetch", "--all", "--prune") -WorkDir $localPath
         return $localPath
     }
 
@@ -31,10 +31,10 @@ function Initialize-Repo {
     $repoPath = Join-Path $wtDir $repoName
 
     if (Test-Path "$repoPath\.git") {
-        Invoke-Git -GitArgs @("fetch", "--all", "--prune") -WorkDir $repoPath
+        $null = Invoke-Git -GitArgs @("fetch", "--all", "--prune") -WorkDir $repoPath
     } else {
         New-Item -ItemType Directory -Path $wtDir -Force | Out-Null
-        Invoke-Git -GitArgs @("clone", $RepoUrl, $repoPath)
+        $null = Invoke-Git -GitArgs @("clone", $RepoUrl, $repoPath)
     }
     return $repoPath
 }
@@ -59,7 +59,7 @@ function New-Worktree {
     }
 
     try {
-        Invoke-Git -GitArgs @("worktree", "add", "-b", $BranchName, $wtPath, "origin/$BaseBranch") -WorkDir $RepoPath
+        $null = Invoke-Git -GitArgs @("worktree", "add", "-b", $BranchName, $wtPath, "origin/$BaseBranch") -WorkDir $RepoPath
     } catch {
         if (Test-Path $wtPath) { return $wtPath }
         throw
