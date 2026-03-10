@@ -14,27 +14,43 @@ function Invoke-CopilotAgent {
     )
 
     $cmd = $script:SarmaConfig.CopilotCliCmd
-    $timeout = $script:SarmaConfig.ExecutorTimeout
+
+    # Resolve to absolute path
+    $WorkDir = (Resolve-Path $WorkDir -ErrorAction SilentlyContinue).Path
+    if (-not $WorkDir -or -not (Test-Path $WorkDir)) {
+        return [PSCustomObject]@{
+            ExitCode = -3
+            Stdout   = ""
+            Stderr   = "Working directory does not exist: $WorkDir"
+            Success  = $false
+        }
+    }
 
     if ($Live) {
-        # Stream directly to terminal
-        $proc = Start-Process -FilePath $cmd -ArgumentList "--prompt", "`"$Prompt`"" `
-            -WorkingDirectory $WorkDir -NoNewWindow -Wait -PassThru
+        $prevDir = Get-Location
+        try {
+            Set-Location $WorkDir
+            & $cmd --prompt $Prompt
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Set-Location $prevDir
+        }
         return [PSCustomObject]@{
-            ExitCode = $proc.ExitCode
+            ExitCode = $exitCode
             Stdout   = "(live output — see terminal)"
             Stderr   = ""
-            Success  = ($proc.ExitCode -eq 0)
+            Success  = ($exitCode -eq 0)
         }
     } else {
-        # Capture output
         $stdoutFile = [System.IO.Path]::GetTempFileName()
         $stderrFile = [System.IO.Path]::GetTempFileName()
-
         try {
+            $prevDir = Get-Location
+            Set-Location $WorkDir
             $proc = Start-Process -FilePath $cmd -ArgumentList "--prompt", "`"$Prompt`"" `
-                -WorkingDirectory $WorkDir -NoNewWindow -Wait -PassThru `
+                -NoNewWindow -Wait -PassThru `
                 -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+            Set-Location $prevDir
 
             $stdout = Get-Content $stdoutFile -Raw -ErrorAction SilentlyContinue
             $stderr = Get-Content $stderrFile -Raw -ErrorAction SilentlyContinue
@@ -46,6 +62,7 @@ function Invoke-CopilotAgent {
                 Success  = ($proc.ExitCode -eq 0)
             }
         } finally {
+            Set-Location $prevDir
             Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
         }
     }
