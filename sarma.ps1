@@ -1,0 +1,264 @@
+<#
+.SYNOPSIS
+    Sarma Launcher — distributed coding task orchestrator (Master CLI)
+.DESCRIPTION
+    Submit tasks, delegate work items, check status, view logs, and manage workers.
+.EXAMPLE
+    .\sarma.ps1 submit --prompt "Fix login bug"
+    .\sarma.ps1 delegate 4946264 --type test
+    .\sarma.ps1 status
+    .\sarma.ps1 logs <task-id>
+    .\sarma.ps1 workers
+    .\sarma.ps1 prune --completed
+#>
+
+# Load all library modules
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. "$scriptDir\lib\config.ps1"
+. "$scriptDir\lib\queue.ps1"
+. "$scriptDir\lib\table.ps1"
+. "$scriptDir\lib\pr.ps1"
+. "$scriptDir\lib\ado-wit.ps1"
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+function New-TaskId { return [guid]::NewGuid().ToString() }
+
+function Save-Task {
+    param([hashtable]$Task)
+    Set-SarmaTableEntity -TableName "sarmatasks" -PartitionKey "task" -RowKey $Task.id -Properties $Task
+}
+
+function Show-Task {
+    param($Task)
+    Write-Host "Task:    $($Task.id)"
+    Write-Host "Status:  $($Task.status)"
+    Write-Host "Type:    $($Task.taskType)"
+    Write-Host "Worker:  $(if ($Task.workerId) { $Task.workerId } else { '—' })"
+    Write-Host "Branch:  $($Task.resultBranch)"
+    Write-Host "Created: $($Task.createdAt)"
+    Write-Host "Started: $(if ($Task.startedAt) { $Task.startedAt } else { '—' })"
+    Write-Host "Done:    $(if ($Task.completedAt) { $Task.completedAt } else { '—' })"
+    if ($Task.error) { Write-Host "Error:   $($Task.error)" -ForegroundColor Red }
+    if ($Task.workItemId) { Write-Host "Work Item: #$($Task.workItemId)" }
+    Write-Host ""
+    Write-Host "Prompt:"
+    Write-Host "  $($Task.prompt)" -ForegroundColor Cyan
+}
+
+# ── Commands ─────────────────────────────────────────────────────
+
+function Invoke-Submit {
+    param(
+        [string]$Prompt,
+        [string]$Repo,
+        [string]$Branch = "main",
+        [string]$TaskType = "backend",
+        [string[]]$Reviewer = @()
+    )
+
+    if (-not $Prompt) { Write-Host "Error: --prompt is required" -ForegroundColor Red; return }
+
+    $id = New-TaskId
+    $task = @{
+        id            = $id
+        repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
+        branch        = $Branch
+        taskType      = $TaskType
+        prompt        = $Prompt
+        status        = "pending"
+        resultBranch  = "task/$($id.Substring(0,8))"
+        commitMessage = "[sarma] ${TaskType}: $($Prompt.Substring(0, [Math]::Min(80, $Prompt.Length)))"
+        prTitle       = "[sarma] ${TaskType}: $($Prompt.Substring(0, [Math]::Min(80, $Prompt.Length)))"
+        prDescription = ""
+        reviewers     = ($Reviewer -join ",")
+        createdAt     = [datetime]::UtcNow.ToString("o")
+        startedAt     = ""
+        completedAt   = ""
+        workerId      = ""
+        error         = ""
+        workItemId    = ""
+    }
+
+    Save-Task $task
+    Write-Host "✅ Task submitted: $id" -ForegroundColor Green
+    Write-Host "   Type: $TaskType | Branch: task/$($id.Substring(0,8))"
+}
+
+function Invoke-Delegate {
+    param(
+        [int]$WorkItemId,
+        [string]$Repo,
+        [string]$Branch = "main",
+        [string]$TaskType = "backend",
+        [string[]]$Reviewer = @()
+    )
+
+    if (-not $WorkItemId) { Write-Host "Error: work item ID is required" -ForegroundColor Red; return }
+
+    Write-Host "Fetching work item #$WorkItemId…"
+    $wi = Get-SarmaWorkItem -Id $WorkItemId
+
+    Write-Host "  Title: $($wi.Title)"
+    Write-Host "  Type:  $($wi.Type) | State: $($wi.State)"
+
+    $prompt = "Work Item #$WorkItemId`: $($wi.Title)`n`n$($wi.Description)"
+    $id = New-TaskId
+
+    $task = @{
+        id            = $id
+        repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
+        branch        = $Branch
+        taskType      = $TaskType
+        prompt        = $prompt
+        status        = "pending"
+        resultBranch  = "task/$($id.Substring(0,8))"
+        commitMessage = "[#$WorkItemId] $($wi.Title)"
+        prTitle       = "[#$WorkItemId] $($wi.Title)"
+        prDescription = "Auto-generated from work item #$WorkItemId`n`n$($wi.Description.Substring(0, [Math]::Min(500, $wi.Description.Length)))"
+        reviewers     = ($Reviewer -join ",")
+        createdAt     = [datetime]::UtcNow.ToString("o")
+        startedAt     = ""
+        completedAt   = ""
+        workerId      = ""
+        error         = ""
+        workItemId    = "$WorkItemId"
+    }
+
+    Save-Task $task
+    Write-Host "✅ Delegated: $id" -ForegroundColor Green
+    Write-Host "   Branch: task/$($id.Substring(0,8))"
+}
+
+function Invoke-Status {
+    param([string]$Filter)
+
+    $filterExpr = "PartitionKey eq 'task'"
+    if ($Filter) { $filterExpr += " and status eq '$Filter'" }
+
+    $tasks = Get-SarmaTableEntities -TableName "sarmatasks" -Filter $filterExpr
+    if (-not $tasks -or $tasks.Count -eq 0) {
+        Write-Host "No tasks found."
+        return
+    }
+
+    Write-Host ("{0,-38} {1,-10} {2,-12} {3,-20} {4}" -f "ID", "TYPE", "STATUS", "WORKER", "BRANCH")
+    Write-Host ("─" * 100)
+    foreach ($t in $tasks) {
+        $worker = if ($t.workerId) { $t.workerId } else { "—" }
+        Write-Host ("{0,-38} {1,-10} {2,-12} {3,-20} {4}" -f $t.RowKey, $t.taskType, $t.status, $worker, $t.resultBranch)
+    }
+}
+
+function Invoke-Logs {
+    param([string]$TaskId)
+    if (-not $TaskId) { Write-Host "Error: task ID is required" -ForegroundColor Red; return }
+
+    $task = Get-SarmaTableEntity -TableName "sarmatasks" -PartitionKey "task" -RowKey $TaskId
+    if (-not $task) { Write-Host "Task $TaskId not found." -ForegroundColor Red; return }
+    Show-Task $task
+}
+
+function Invoke-Workers {
+    $workers = Get-SarmaTableEntities -TableName "sarmaworkers" -Filter "PartitionKey eq 'worker'"
+    if (-not $workers -or $workers.Count -eq 0) {
+        Write-Host "No workers registered."
+        return
+    }
+
+    Write-Host ("{0,-30} {1,-25} {2}" -f "WORKER ID", "LAST SEEN", "CURRENT TASK")
+    Write-Host ("─" * 80)
+    foreach ($w in $workers) {
+        $taskId = if ($w.currentTaskId) { $w.currentTaskId.Substring(0, 8) + "…" } else { "—" }
+        Write-Host ("{0,-30} {1,-25} {2}" -f $w.RowKey, $w.lastSeen, $taskId)
+    }
+}
+
+function Invoke-Prune {
+    param([switch]$Completed, [switch]$Failed, [switch]$All)
+
+    $statuses = @()
+    if ($Completed -or $All) { $statuses += "completed" }
+    if ($Failed -or $All) { $statuses += "failed" }
+    if ($All) { $statuses += "pending" }
+
+    if ($statuses.Count -eq 0) {
+        Write-Host "Specify --completed, --failed, or --all."
+        return
+    }
+
+    $pruned = 0
+    foreach ($s in $statuses) {
+        $tasks = Get-SarmaTableEntities -TableName "sarmatasks" -Filter "PartitionKey eq 'task' and status eq '$s'"
+        foreach ($t in $tasks) {
+            Remove-SarmaTableEntity -TableName "sarmatasks" -PartitionKey "task" -RowKey $t.RowKey
+            $pruned++
+        }
+    }
+    Write-Host "🗑️  Pruned $pruned task(s)." -ForegroundColor Green
+}
+
+# ── Argument Parsing ─────────────────────────────────────────────
+
+$command = $args[0]
+$remaining = $args[1..($args.Count - 1)]
+
+# Parse --key value pairs from remaining args
+function Parse-Args {
+    param([string[]]$ArgList)
+    $parsed = @{}
+    $positional = @()
+    for ($i = 0; $i -lt $ArgList.Count; $i++) {
+        $a = $ArgList[$i]
+        if ($a -match "^--(.+)$") {
+            $key = $Matches[1]
+            if (($i + 1) -lt $ArgList.Count -and -not $ArgList[$i + 1].StartsWith("--")) {
+                $parsed[$key] = $ArgList[$i + 1]
+                $i++
+            } else {
+                $parsed[$key] = $true
+            }
+        } else {
+            $positional += $a
+        }
+    }
+    $parsed["_positional"] = $positional
+    return $parsed
+}
+
+$p = Parse-Args $remaining
+
+switch ($command) {
+    "submit" {
+        $reviewers = if ($p["reviewer"]) { @($p["reviewer"]) } else { @() }
+        Invoke-Submit -Prompt $p["prompt"] -Repo $p["repo"] -Branch ($p["branch"] ?? "main") -TaskType ($p["type"] ?? "backend") -Reviewer $reviewers
+    }
+    "delegate" {
+        $wiId = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
+        $reviewers = if ($p["reviewer"]) { @($p["reviewer"]) } else { @() }
+        Invoke-Delegate -WorkItemId $wiId -Repo $p["repo"] -Branch ($p["branch"] ?? "main") -TaskType ($p["type"] ?? "backend") -Reviewer $reviewers
+    }
+    "status" { Invoke-Status -Filter $p["filter"] }
+    "logs"   { Invoke-Logs -TaskId ($p["_positional"][0]) }
+    "workers" { Invoke-Workers }
+    "prune"  { Invoke-Prune -Completed:($p["completed"] -eq $true) -Failed:($p["failed"] -eq $true) -All:($p["all"] -eq $true) }
+    default {
+        Write-Host "Sarma Launcher — distributed coding task orchestrator" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Usage: .\sarma.ps1 <command> [options]"
+        Write-Host ""
+        Write-Host "Commands:"
+        Write-Host "  submit      Submit a task with a prompt"
+        Write-Host "  delegate    Delegate an ADO work item to a worker"
+        Write-Host "  status      Show all tasks"
+        Write-Host "  logs        Show task details"
+        Write-Host "  workers     Show registered workers"
+        Write-Host "  prune       Remove completed/failed tasks"
+        Write-Host ""
+        Write-Host "Examples:"
+        Write-Host '  .\sarma.ps1 submit --prompt "Fix login bug"'
+        Write-Host "  .\sarma.ps1 delegate 4946264 --type test"
+        Write-Host "  .\sarma.ps1 status --filter running"
+        Write-Host "  .\sarma.ps1 logs <task-id>"
+    }
+}

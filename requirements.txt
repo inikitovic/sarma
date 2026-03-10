@@ -1,5 +1,0 @@
-click>=8.1
-redis>=5.0
-pydantic>=2.0
-requests>=2.31
-azure-identity>=1.15

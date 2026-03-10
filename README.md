@@ -1,114 +1,62 @@
 # Sarma Launcher
 
-Distributed task orchestrator that dispatches coding tasks across multiple Microsoft Dev Boxes, executes them via Agency Copilot CLI, and creates Azure DevOps pull requests — fully automated.
+Distributed task orchestrator that dispatches coding tasks across multiple Microsoft Dev Boxes, executes them via Agency Copilot CLI, and creates Azure DevOps pull requests — fully automated, zero dependencies.
 
 ## Architecture
 
 ```
 ┌─────────────┐       ┌──────────────────┐       ┌──────────────────┐
-│  Developer   │──────▶│   Azure Redis    │◀──────│  Dev Box Worker  │
-│  Master CLI  │       │   Task Queue     │       │  (polls + runs)  │
+│  Developer   │──────▶│  Azure Storage   │◀──────│  Dev Box Worker  │
+│  sarma.ps1   │       │  Queue + Table   │       │  sarma-worker    │
 └─────────────┘       └──────────────────┘       └──────┬───────────┘
                                                         │
                                             ┌───────────┴───────────┐
                                             │  Agency Copilot CLI   │
-                                            │  (executes prompt)    │
                                             └───────────┬───────────┘
                                                         │
                                             ┌───────────┴───────────┐
-                                            │  Azure DevOps         │
-                                            │  (PR created)         │
+                                            │  Azure DevOps PR      │
                                             └───────────────────────┘
 ```
 
 ## Prerequisites
 
-- Python 3.10+
+- PowerShell 5.1+ (pre-installed on Windows)
 - Git
-- Azure CLI (for Dev Box provisioning)
-- Agency Copilot CLI installed on each Dev Box
-- Azure Cache for Redis instance
+- Azure CLI (`az login`)
+- Agency Copilot CLI on each Dev Box
 
-## Installation
+**No pip, no conda, no packages to install.**
 
-```bash
-cd D:\swarm
-pip install -e ".[dev]"
+## Setup
+
+```powershell
+git clone https://github.com/inikitovic/sarma.git
+az login
+$env:SARMA_STORAGE_ACCOUNT = "sarmastorage"
+$env:SARMA_LOCAL_REPO = "Q:\src\DsMainDev"    # Dev Boxes only
+$env:AZURE_DEVOPS_PAT = "<your-pat>"
+```
+
+## Usage
+
+```powershell
+.\sarma.ps1 delegate 4946264 --type test          # delegate work item
+.\sarma.ps1 submit --prompt "Fix the login bug"   # or free-form prompt
+.\sarma.ps1 status                                 # check all tasks
+.\sarma.ps1 logs <task-id>                         # task details
+.\sarma.ps1 workers                                # registered workers
+.\sarma-worker.ps1 --live                          # start worker on Dev Box
 ```
 
 ## Configuration
 
-Set these environment variables on each machine:
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `REDIS_HOST` | ✅ | `localhost` | Azure Redis hostname |
-| `REDIS_PORT` | | `6380` | Redis port (6380 for Azure TLS) |
-| `REDIS_PASSWORD` | ✅ | | Redis access key |
-| `REDIS_SSL` | | `true` | Use TLS |
-| `AZURE_DEVOPS_PAT` | ✅ | | ADO Personal Access Token |
-| `ADO_ORG` | | `msdata` | Default ADO organization |
-| `ADO_PROJECT` | | `Database Systems` | Default ADO project |
-| `COPILOT_CLI_CMD` | | `copilot-cli` | Path to agent CLI |
-| `WORKER_ID` | | hostname | Unique worker identifier |
-| `WORKER_CONCURRENCY` | | `1` | Reserved for future use |
-| `WORKER_TASK_TYPES` | | `backend,frontend,test,docs` | Task types this worker accepts |
-| `LOG_DIR` | | `./logs` | Log output directory |
-| `WORKTREE_DIR` | | `./worktrees` | Git worktree base directory |
-| `EXECUTOR_TIMEOUT` | | `3600` | Max seconds per task |
-
-## Quick Start
-
-### 1. Submit a task
-
-```bash
-sarma submit \
-  --repo https://dev.azure.com/msdata/DatabaseSystems/_git/MyRepo \
-  --branch main \
-  --type backend \
-  --prompt "Implement OAuth login with JWT tokens" \
-  --reviewer jdoe@microsoft.com
-```
-
-### 2. Start a worker (on a Dev Box)
-
-```bash
-sarma-worker --types backend,test
-```
-
-### 3. Monitor tasks
-
-```bash
-sarma status                    # all tasks
-sarma status --filter running   # only running
-sarma workers                   # registered workers
-sarma logs <task-id>            # task details
-```
-
-### 4. Cleanup
-
-```bash
-sarma prune --completed --yes
-```
-
-## Task Types
-
-| Type | Description |
-|------|-------------|
-| `backend` | Backend logic, APIs, services |
-| `frontend` | UI components, pages |
-| `test` | Test generation, test fixes |
-| `docs` | Documentation, READMEs |
-
-Workers can selectively consume specific types via `--types` or `WORKER_TASK_TYPES`.
-
-## Running Tests
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
-## License
-
-Internal — Microsoft use only.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SARMA_STORAGE_ACCOUNT` | `sarmastorage` | Azure Storage Account name |
+| `SARMA_LOCAL_REPO` | | Local repo path (skips cloning) |
+| `AZURE_DEVOPS_PAT` | | ADO PAT for PRs and work items |
+| `ADO_ORG` | `msdata` | ADO organization |
+| `ADO_PROJECT` | `Database Systems` | ADO project for PRs |
+| `COPILOT_CLI_CMD` | `copilot-cli` | Agent CLI command |
+| `WORKER_TASK_TYPES` | `backend,frontend,test,docs` | Task types for this worker |
