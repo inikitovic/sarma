@@ -42,7 +42,8 @@ function Initialize-Repo {
 function New-Worktree {
     <#
     .SYNOPSIS
-        Create a git worktree for a task branch.
+        Create a task branch in the local repo (no worktree — Copilot doesn't support them).
+        Returns the repo path itself.
     #>
     param(
         [Parameter(Mandatory)][string]$RepoPath,
@@ -52,28 +53,15 @@ function New-Worktree {
 
     if (-not $BaseBranch) { $BaseBranch = $script:SarmaConfig.DefaultBranch }
 
-    $wtDir = $script:SarmaConfig.WorktreeDir
-    # Ensure absolute path
-    if (-not [System.IO.Path]::IsPathRooted($wtDir)) {
-        $wtDir = Join-Path $PSScriptRoot ".." $wtDir
-    }
-    $wtDir = [System.IO.Path]::GetFullPath($wtDir)
-    New-Item -ItemType Directory -Path $wtDir -Force | Out-Null
-
-    $safeName = $BranchName -replace "/", "-"
-    $wtPath = Join-Path $wtDir "wt-$safeName"
-
-    if (Test-Path $wtPath) {
-        return $wtPath
-    }
-
+    # Create and checkout the task branch
     try {
-        $null = Invoke-Git -GitArgs @("worktree", "add", "-b", $BranchName, $wtPath, "origin/$BaseBranch") -WorkDir $RepoPath
+        $null = Invoke-Git -GitArgs @("checkout", "-b", $BranchName, "origin/$BaseBranch") -WorkDir $RepoPath
     } catch {
-        if (Test-Path $wtPath) { return $wtPath }
-        throw
+        # Branch might already exist
+        $null = Invoke-Git -GitArgs @("checkout", $BranchName) -WorkDir $RepoPath
     }
-    return $wtPath
+
+    return $RepoPath
 }
 
 function Submit-Changes {
@@ -102,14 +90,13 @@ function Submit-Changes {
 function Remove-Worktree {
     <#
     .SYNOPSIS
-        Remove a git worktree.
+        Switch back to the default branch after task completes.
     #>
     param(
         [Parameter(Mandatory)][string]$RepoPath,
         [Parameter(Mandatory)][string]$WorktreePath
     )
 
-    if (Test-Path $WorktreePath) {
-        try { Invoke-Git -GitArgs @("worktree", "remove", $WorktreePath, "--force") -WorkDir $RepoPath } catch {}
-    }
+    $defaultBranch = $script:SarmaConfig.DefaultBranch
+    try { $null = Invoke-Git -GitArgs @("checkout", $defaultBranch) -WorkDir $RepoPath } catch {}
 }
