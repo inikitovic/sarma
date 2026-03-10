@@ -29,6 +29,15 @@ def clone_or_fetch(repo_url: str, base_dir: str | None = None) -> str:
 
     Returns the path to the bare/main clone directory.
     """
+    from urllib.parse import quote, urlparse, urlunparse
+
+    # Re-encode the URL path to handle spaces or mangled %20
+    parsed = urlparse(repo_url)
+    # Decode any existing encoding, then re-encode properly
+    clean_path = parsed.path.replace("%20", " ")
+    encoded_path = quote(clean_path, safe="/:@")
+    repo_url = urlunparse(parsed._replace(path=encoded_path))
+
     base_dir = base_dir or cfg.WORKTREE_DIR
     # Derive a directory name from the repo URL
     repo_name = repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
