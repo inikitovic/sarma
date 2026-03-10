@@ -18,12 +18,10 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # ── Parse args ───────────────────────────────────────────────────
 
-$liveMode = $false
 $taskTypes = $script:SarmaConfig.WorkerTaskTypes
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
-        "--live"  { $liveMode = $true }
         "--types" { $i++; $taskTypes = $args[$i] -split "," }
     }
 }
@@ -90,49 +88,58 @@ function Process-Task {
 
     try {
         # 1. Get repo
-        Write-Host "  [1/5] Initializing repo…" -ForegroundColor DarkGray
+        Write-Host "  [1/3] Initializing repo…" -ForegroundColor DarkGray
         $repoPath = Initialize-Repo -RepoUrl $task.repo
-        Write-Host "  [1/5] ✓ Repo ready" -ForegroundColor Green
+        Write-Host "  [1/3] ✓ Repo ready" -ForegroundColor Green
 
         # 2. Create worktree
-        Write-Host "  [2/5] Creating worktree $($task.resultBranch)…" -ForegroundColor DarkGray
+        Write-Host "  [2/3] Creating worktree $($task.resultBranch)…" -ForegroundColor DarkGray
         $wtPath = New-Worktree -RepoPath $repoPath -BranchName $task.resultBranch -BaseBranch $task.branch
-        Write-Host "  [2/5] ✓ Worktree at $wtPath" -ForegroundColor Green
+        Write-Host "  [2/3] ✓ Worktree at $wtPath" -ForegroundColor Green
 
-        try {
-            # 3. Execute
-            Write-Host "  [3/5] Running agent…" -ForegroundColor DarkGray
-            $result = Invoke-CopilotAgent -Prompt $task.prompt -WorkDir $wtPath -Live:$liveMode
-            $icon = if ($result.Success) { "✓" } else { "✗" }
-            Write-Host "  [3/5] $icon Agent finished (rc=$($result.ExitCode))" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+        # 3. Craft prompt and launch agent
+        #    The agent handles everything: code changes, commit, push, and PR
+        $reviewers = if ($task.reviewers) { $task.reviewers } else { "" }
+        $adoOrg = if ($task.adoOrg) { $task.adoOrg } else { $script:SarmaConfig.AdoOrg }
+        $adoProject = if ($task.adoProject) { $task.adoProject } else { $script:SarmaConfig.AdoProject }
+        $repoName = ($task.repo -split "/")[-1] -replace "\.git$", ""
 
-            if (-not $result.Success) {
-                throw "Agent failed (rc=$($result.ExitCode)): $($result.Stderr.Substring(0, [Math]::Min(500, $result.Stderr.Length)))"
-            }
+        $fullPrompt = @"
+$($task.prompt)
 
-            # 4. Commit and push
-            Write-Host "  [4/5] Committing and pushing…" -ForegroundColor DarkGray
-            Submit-Changes -WorktreePath $wtPath -Message $task.commitMessage -Branch $task.resultBranch
-            Write-Host "  [4/5] ✓ Pushed to $($task.resultBranch)" -ForegroundColor Green
+== INSTRUCTIONS ==
+You are on branch "$($task.resultBranch)" in the $repoName repository.
 
-            # 5. Create PR
-            Write-Host "  [5/5] Creating PR…" -ForegroundColor DarkGray
-            $repoName = ($task.repo -split "/")[-1] -replace "\.git$", ""
-            $reviewers = if ($task.reviewers) { $task.reviewers -split "," | Where-Object { $_ } } else { @() }
-            $pr = New-AzDevOpsPR -Repo $repoName -SourceBranch $task.resultBranch -TargetBranch $task.branch `
-                -Title $task.prTitle -Description $task.prDescription -Reviewers $reviewers
-            $prId = $pr.pullRequestId
-            Write-Host "  [5/5] ✓ PR #$prId created" -ForegroundColor Green
+When you are done with all code changes:
+1. Stage and commit all changes: git add -A && git commit -m "$($task.commitMessage)"
+2. Push the branch: git push -u origin $($task.resultBranch)
+3. Create a pull request in Azure DevOps:
+   - Organization: $adoOrg
+   - Project: $adoProject
+   - Repository: $repoName
+   - Source branch: $($task.resultBranch)
+   - Target branch: $($task.branch)
+   - Title: $($task.prTitle)
+$(if ($reviewers) { "   - Reviewers: $reviewers" })
 
-            # Done
-            $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
-            Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields @{
-                completedAt = [datetime]::UtcNow.ToString("o")
-            }
-            Write-Host "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" -ForegroundColor Green
-        } finally {
-            Remove-Worktree -RepoPath $repoPath -WorktreePath $wtPath
+Do NOT ask for confirmation. Complete the task autonomously.
+"@
+
+        Write-Host "  [3/3] Launching agent in new window…" -ForegroundColor DarkGray
+        $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath
+        $icon = if ($result.Success) { "✓" } else { "✗" }
+        Write-Host "  [3/3] $icon Agent finished (rc=$($result.ExitCode))" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+
+        if (-not $result.Success) {
+            throw "Agent failed (rc=$($result.ExitCode)): $($result.Stderr)"
         }
+
+        # Done — agent handled commit + push + PR
+        $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
+        Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields @{
+            completedAt = [datetime]::UtcNow.ToString("o")
+        }
+        Write-Host "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" -ForegroundColor Green
 
     } catch {
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)

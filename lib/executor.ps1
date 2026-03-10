@@ -1,19 +1,15 @@
-# lib\executor.ps1 — Copilot CLI subprocess wrapper
+# lib\executor.ps1 — Launch agency copilot in a new pwsh window
 
 function Invoke-CopilotAgent {
     <#
     .SYNOPSIS
-        Run the Copilot CLI agent with a prompt in a working directory.
-    .PARAMETER Live
-        If set, streams output directly to terminal instead of capturing.
+        Launch agency copilot in a new PowerShell 7 window with autopilot mode.
+        The agent handles everything: code changes, commit, push, and PR creation.
     #>
     param(
         [Parameter(Mandatory)][string]$Prompt,
-        [Parameter(Mandatory)][string]$WorkDir,
-        [switch]$Live
+        [Parameter(Mandatory)][string]$WorkDir
     )
-
-    $cmd = $script:SarmaConfig.CopilotCliCmd
 
     # Resolve to absolute path
     if (-not [System.IO.Path]::IsPathRooted($WorkDir)) {
@@ -28,44 +24,76 @@ function Invoke-CopilotAgent {
         }
     }
 
-    if ($Live) {
-        $prevDir = Get-Location
-        try {
-            Set-Location $WorkDir
-            & agency copilot --prompt $Prompt
-            $exitCode = $LASTEXITCODE
-        } finally {
-            Set-Location $prevDir
-        }
+    # Write prompt to a temp file (avoids quoting/escaping issues)
+    $promptFile = Join-Path $WorkDir ".sarma-prompt.txt"
+    $Prompt | Set-Content -Path $promptFile -Encoding UTF8
+
+    # Build the command to run in the new window
+    # Agency copilot reads the prompt, runs autonomously, then writes a result file
+    $resultFile = Join-Path $WorkDir ".sarma-result.json"
+    $escapedWorkDir = $WorkDir -replace "'", "''"
+    $escapedPromptFile = $promptFile -replace "'", "''"
+    $escapedResultFile = $resultFile -replace "'", "''"
+
+    $innerCommand = @"
+Set-Location '$escapedWorkDir'
+`$prompt = Get-Content '$escapedPromptFile' -Raw
+`$startTime = Get-Date -Format o
+Write-Host '═══ Sarma Agent Session ═══' -ForegroundColor Cyan
+Write-Host "Prompt: `$(`$prompt.Substring(0, [Math]::Min(200, `$prompt.Length)))..." -ForegroundColor DarkGray
+Write-Host ''
+
+agency copilot --prompt `$prompt --autopilot --allow-all
+`$exitCode = `$LASTEXITCODE
+`$endTime = Get-Date -Format o
+
+# Write result file for the worker to pick up
+@{
+    exitCode  = `$exitCode
+    startTime = `$startTime
+    endTime   = `$endTime
+    success   = (`$exitCode -eq 0)
+} | ConvertTo-Json | Set-Content '$escapedResultFile' -Encoding UTF8
+
+if (`$exitCode -eq 0) {
+    Write-Host '' 
+    Write-Host '═══ Agent completed successfully ═══' -ForegroundColor Green
+} else {
+    Write-Host ''
+    Write-Host "═══ Agent failed (exit code `$exitCode) ═══" -ForegroundColor Red
+}
+
+Start-Sleep -Seconds 3
+"@
+
+    # Launch in a new pwsh window
+    $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', $innerCommand `
+        -PassThru
+
+    Write-Host "    Agent launched in window (PID: $($proc.Id))" -ForegroundColor DarkGray
+
+    # Wait for the process to exit
+    $proc.WaitForExit()
+
+    # Read result file if it exists
+    if (Test-Path $resultFile) {
+        $result = Get-Content $resultFile -Raw | ConvertFrom-Json
+        Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
         return [PSCustomObject]@{
-            ExitCode = $exitCode
-            Stdout   = "(live output — see terminal)"
+            ExitCode = $result.exitCode
+            Stdout   = "Agent session: $($result.startTime) → $($result.endTime)"
             Stderr   = ""
-            Success  = ($exitCode -eq 0)
+            Success  = $result.success
         }
-    } else {
-        $stdoutFile = [System.IO.Path]::GetTempFileName()
-        $stderrFile = [System.IO.Path]::GetTempFileName()
-        try {
-            $prevDir = Get-Location
-            Set-Location $WorkDir
-            $proc = Start-Process -FilePath "agency" -ArgumentList "copilot", "--prompt", "`"$Prompt`"" `
-                -NoNewWindow -Wait -PassThru `
-                -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
-            Set-Location $prevDir
+    }
 
-            $stdout = Get-Content $stdoutFile -Raw -ErrorAction SilentlyContinue
-            $stderr = Get-Content $stderrFile -Raw -ErrorAction SilentlyContinue
-
-            return [PSCustomObject]@{
-                ExitCode = $proc.ExitCode
-                Stdout   = if ($stdout) { $stdout } else { "" }
-                Stderr   = if ($stderr) { $stderr } else { "" }
-                Success  = ($proc.ExitCode -eq 0)
-            }
-        } finally {
-            Set-Location $prevDir
-            Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
-        }
+    # Fallback — no result file (window was closed manually)
+    Remove-Item $promptFile -Force -ErrorAction SilentlyContinue
+    return [PSCustomObject]@{
+        ExitCode = $proc.ExitCode
+        Stdout   = "Agent window closed"
+        Stderr   = ""
+        Success  = ($proc.ExitCode -eq 0)
     }
 }
