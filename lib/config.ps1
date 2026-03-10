@@ -2,7 +2,7 @@
 
 $script:SarmaConfig = @{
     StorageAccount  = if ($env:SARMA_STORAGE_ACCOUNT) { $env:SARMA_STORAGE_ACCOUNT } else { "dbjekovicsa" }
-    LocalRepo       = if ($env:SARMA_LOCAL_REPO) { $env:SARMA_LOCAL_REPO } else { "" }
+    LocalRepo       = if ($env:SARMA_LOCAL_REPO) { $env:SARMA_LOCAL_REPO } elseif (Test-Path "Q:\src\DsMainDev\.git") { "Q:\src\DsMainDev" } else { "" }
     DefaultRepo     = if ($env:SARMA_DEFAULT_REPO) { $env:SARMA_DEFAULT_REPO } else { "https://dev.azure.com/msdata/Database%20Systems/_git/DsMainDev" }
     AdoOrg          = if ($env:ADO_ORG) { $env:ADO_ORG } else { "msdata" }
     AdoProject      = if ($env:ADO_PROJECT) { $env:ADO_PROJECT } else { "Database Systems" }
