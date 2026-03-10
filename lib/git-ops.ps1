@@ -53,6 +53,13 @@ function New-Worktree {
     if (-not $BaseBranch) { $BaseBranch = $script:SarmaConfig.DefaultBranch }
 
     $wtDir = $script:SarmaConfig.WorktreeDir
+    # Ensure absolute path
+    if (-not [System.IO.Path]::IsPathRooted($wtDir)) {
+        $wtDir = Join-Path $PSScriptRoot ".." $wtDir
+    }
+    $wtDir = [System.IO.Path]::GetFullPath($wtDir)
+    New-Item -ItemType Directory -Path $wtDir -Force | Out-Null
+
     $safeName = $BranchName -replace "/", "-"
     $wtPath = Join-Path $wtDir "wt-$safeName"
 

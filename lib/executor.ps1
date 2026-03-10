@@ -16,8 +16,10 @@ function Invoke-CopilotAgent {
     $cmd = $script:SarmaConfig.CopilotCliCmd
 
     # Resolve to absolute path
-    $WorkDir = (Resolve-Path $WorkDir -ErrorAction SilentlyContinue).Path
-    if (-not $WorkDir -or -not (Test-Path $WorkDir)) {
+    if (-not [System.IO.Path]::IsPathRooted($WorkDir)) {
+        $WorkDir = [System.IO.Path]::GetFullPath($WorkDir)
+    }
+    if (-not (Test-Path $WorkDir)) {
         return [PSCustomObject]@{
             ExitCode = -3
             Stdout   = ""
