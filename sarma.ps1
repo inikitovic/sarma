@@ -67,7 +67,7 @@ function Invoke-Submit {
         taskType      = $TaskType
         prompt        = $Prompt
         status        = "pending"
-        resultBranch  = "task/$($id.Substring(0,8))"
+        resultBranch  = "dev/$($script:SarmaConfig.UserAlias)/task/$($id.Substring(0,8))"
         commitMessage = "[sarma] ${TaskType}: $($Prompt.Substring(0, [Math]::Min(80, $Prompt.Length)))"
         prTitle       = "[sarma] ${TaskType}: $($Prompt.Substring(0, [Math]::Min(80, $Prompt.Length)))"
         prDescription = ""
@@ -82,7 +82,7 @@ function Invoke-Submit {
 
     Save-Task $task
     Write-Host "✅ Task submitted: $id" -ForegroundColor Green
-    Write-Host "   Type: $TaskType | Branch: task/$($id.Substring(0,8))"
+    Write-Host "   Type: $TaskType | Branch: dev/$($script:SarmaConfig.UserAlias)/task/$($id.Substring(0,8))"
 }
 
 function Invoke-Delegate {
@@ -112,7 +112,7 @@ function Invoke-Delegate {
         taskType      = $TaskType
         prompt        = $prompt
         status        = "pending"
-        resultBranch  = "task/$($id.Substring(0,8))"
+        resultBranch  = "dev/$($script:SarmaConfig.UserAlias)/task/$($id.Substring(0,8))"
         commitMessage = "[#$WorkItemId] $($wi.Title)"
         prTitle       = "[#$WorkItemId] $($wi.Title)"
         prDescription = "Auto-generated from work item #$WorkItemId`n`n$($wi.Description.Substring(0, [Math]::Min(500, $wi.Description.Length)))"
@@ -127,7 +127,7 @@ function Invoke-Delegate {
 
     Save-Task $task
     Write-Host "✅ Delegated: $id" -ForegroundColor Green
-    Write-Host "   Branch: task/$($id.Substring(0,8))"
+    Write-Host "   Branch: dev/$($script:SarmaConfig.UserAlias)/task/$($id.Substring(0,8))"
 }
 
 function Invoke-Status {
@@ -262,4 +262,5 @@ switch ($command) {
         Write-Host "  .\sarma.ps1 logs <task-id>"
     }
 }
+
 

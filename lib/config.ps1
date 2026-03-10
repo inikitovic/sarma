@@ -15,6 +15,7 @@ $script:SarmaConfig = @{
     WorktreeDir     = if ($env:WORKTREE_DIR) { $env:WORKTREE_DIR } else { "./worktrees" }
     ExecutorTimeout = if ($env:EXECUTOR_TIMEOUT) { [int]$env:EXECUTOR_TIMEOUT } else { 3600 }
     WorkerId        = if ($env:WORKER_ID) { $env:WORKER_ID } else { $env:COMPUTERNAME }
+    UserAlias       = if ($env:SARMA_ALIAS) { $env:SARMA_ALIAS } else { $env:USERNAME }
 }
 
 # Token cache
