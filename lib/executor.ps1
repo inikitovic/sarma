@@ -32,7 +32,7 @@ function Invoke-CopilotAgent {
         $prevDir = Get-Location
         try {
             Set-Location $WorkDir
-            & $cmd --prompt $Prompt
+            & agency copilot --prompt $Prompt
             $exitCode = $LASTEXITCODE
         } finally {
             Set-Location $prevDir
@@ -49,7 +49,7 @@ function Invoke-CopilotAgent {
         try {
             $prevDir = Get-Location
             Set-Location $WorkDir
-            $proc = Start-Process -FilePath $cmd -ArgumentList "--prompt", "`"$Prompt`"" `
+            $proc = Start-Process -FilePath "agency" -ArgumentList "copilot", "--prompt", "`"$Prompt`"" `
                 -NoNewWindow -Wait -PassThru `
                 -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
             Set-Location $prevDir
