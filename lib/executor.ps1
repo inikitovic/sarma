@@ -108,15 +108,28 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         # No window focus needed — writing directly to PTY input pipe
         Write-Host "    Sending commands..." -ForegroundColor DarkGray
 
+        # PTY output log for debugging
+        $ptyLogFile = Join-Path $taskDir "ptylog-$taskId.txt"
+        function Log-PtyOutput {
+            param([string]$Label)
+            $raw = $pty.Read(2000)
+            if ($raw) {
+                $clean = Strip-Ansi $raw
+                $entry = "[$Label] $(Get-Date -Format 'HH:mm:ss')`n$clean`n"
+                Add-Content -Path $ptyLogFile -Value $entry -Encoding UTF8
+                Write-Host "    [$Label] $(($clean -split "`n" | Select-Object -First 1).Trim())" -ForegroundColor DarkGray
+            }
+        }
+
         # /allow-all — enable autopilot permissions
         $pty.Write("/allow-all`r")
         Start-Sleep 3
-        $null = $pty.Read(1000)
+        Log-PtyOutput "allow-all"
 
         # /model — set the model
         $pty.Write("/model claude-opus-4.6-1m`r")
         Start-Sleep 3
-        $null = $pty.Read(1000)
+        Log-PtyOutput "model"
 
         # Shift+Tab x2 — switch to agent mode (ask → edit → agent)
         # In terminal, Shift+Tab = ESC [ Z
@@ -124,13 +137,15 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         Start-Sleep 1
         $pty.Write("`e[Z")
         Start-Sleep 2
-        $null = $pty.Read(1000)
+        Log-PtyOutput "shift-tab"
 
         # Send the task prompt
         $pty.Write("$shortPrompt`r")
         Start-Sleep 1
+        Log-PtyOutput "prompt"
 
         Write-Host "    Prompt sent — agent is working..." -ForegroundColor DarkGray
+        Write-Host "    PTY log: $ptyLogFile" -ForegroundColor DarkGray
 
         # ── Poll for completion ───────────────────────────────
         $maxWait = $script:SarmaConfig.ExecutorTimeout
@@ -138,6 +153,16 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         while (-not (Test-Path $doneFile) -and -not $pty.HasExited -and $waited -lt $maxWait) {
             Start-Sleep 5
             $waited += 5
+            # Drain PTY output periodically (prevents pipe buffer from filling)
+            $chunk = $pty.Read(500)
+            if ($chunk -and $waited % 30 -eq 0) {
+                $clean = (Strip-Ansi $chunk).Trim()
+                if ($clean) {
+                    $preview = if ($clean.Length -gt 100) { $clean.Substring(0,100) + "..." } else { $clean }
+                    Write-Host "    [${waited}s] $preview" -ForegroundColor DarkGray
+                    Add-Content -Path $ptyLogFile -Value "[poll ${waited}s] $(Get-Date -Format 'HH:mm:ss')`n$clean`n" -Encoding UTF8
+                }
+            }
         }
 
         $agentCompleted = Test-Path $doneFile
