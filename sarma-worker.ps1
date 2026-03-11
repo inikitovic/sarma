@@ -127,29 +127,37 @@ function Process-Task {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
-        # 1. Initialize repo (use local if available, otherwise clone)
-        Log-Step "[1/3]" "Initializing repo…"
-        Log-Verbose "  Local repo config: '$($script:SarmaConfig.LocalRepo)'"
-        $repoPath = Initialize-Repo -RepoUrl $task.repo
-        Log-Step "[1/3]" "✓ Repo ready at $repoPath" Green
-
-        # 2. Checkout branch
         $isRevise = ($task.isRevise -eq "true")
         $isReserve = ($task.isReserve -eq "true")
         $isReview = ($task.isReview -eq "true")
-        if ($isRevise -or $isReserve -or $isReview) {
-            # Revise/Reserve/Review: copilot will checkout the PR branch via MCP
-            Log-Step "[2/3]" "Preparing for PR #$($task.prNumber)…"
-            $null = Invoke-Git -GitArgs @("fetch", "--all") -WorkDir $repoPath
-            $null = Invoke-Git -GitArgs @("checkout", $script:SarmaConfig.DefaultBranch) -WorkDir $repoPath
-            $wtPath = $repoPath
-            Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (agent will handle PR)" Green
+        $isProfile = ($task.taskType -eq "profile")
+
+        if ($isProfile) {
+            # Profile tasks are pure ADO data fetching — no repo needed
+            $wtPath = $env:TEMP
+            Log-Step "[1/1]" "✓ Profile task — skipping repo setup" Green
         } else {
-            # Normal task: create new branch
-            Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
-            Log-Verbose "  Base branch: $($task.branch)"
-            $wtPath = New-Worktree -RepoPath $repoPath -BranchName $task.resultBranch -BaseBranch $task.branch
-            Log-Step "[2/3]" "✓ Checked out $($task.resultBranch) at $wtPath" Green
+            # 1. Initialize repo (use local if available, otherwise clone)
+            Log-Step "[1/3]" "Initializing repo…"
+            Log-Verbose "  Local repo config: '$($script:SarmaConfig.LocalRepo)'"
+            $repoPath = Initialize-Repo -RepoUrl $task.repo
+            Log-Step "[1/3]" "✓ Repo ready at $repoPath" Green
+
+            # 2. Checkout branch
+            if ($isRevise -or $isReserve -or $isReview) {
+                # Revise/Reserve/Review: copilot will checkout the PR branch via MCP
+                Log-Step "[2/3]" "Preparing for PR #$($task.prNumber)…"
+                $null = Invoke-Git -GitArgs @("fetch", "--all") -WorkDir $repoPath
+                $null = Invoke-Git -GitArgs @("checkout", $script:SarmaConfig.DefaultBranch) -WorkDir $repoPath
+                $wtPath = $repoPath
+                Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (agent will handle PR)" Green
+            } else {
+                # Normal task: create new branch
+                Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
+                Log-Verbose "  Base branch: $($task.branch)"
+                $wtPath = New-Worktree -RepoPath $repoPath -BranchName $task.resultBranch -BaseBranch $task.branch
+                Log-Step "[2/3]" "✓ Checked out $($task.resultBranch) at $wtPath" Green
+            }
         }
 
         # 3. Craft prompt and launch agent
@@ -158,8 +166,8 @@ function Process-Task {
         $adoProject = if ($task.adoProject) { $task.adoProject } else { $script:SarmaConfig.AdoProject }
         $repoName = ($task.repo -split "/")[-1] -replace "\.git$", ""
 
-        if ($isRevise -or $isReserve -or $isReview) {
-            # Revise/Reserve/Review: prompt already has all instructions
+        if ($isRevise -or $isReserve -or $isReview -or $isProfile) {
+            # Revise/Reserve/Review/Profile: prompt already has all instructions
             $fullPrompt = $task.prompt
         } else {
             # Normal task: add branch/commit/PR instructions

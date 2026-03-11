@@ -384,13 +384,90 @@ function Invoke-Profile {
         }
     }
 
-    Write-Host "Building review profile for $Alias..." -ForegroundColor Cyan
-    $result = Build-ReviewerProfile -Alias $Alias
-    if ($result) {
-        Write-Host ""
-        Write-Host "Preview (first 500 chars):" -ForegroundColor DarkGray
-        Write-Host ($result.Substring(0, [Math]::Min(500, $result.Length))) -ForegroundColor DarkGray
+    # Dispatch as a worker task — Copilot agent uses ADO MCP tools (no PAT needed)
+    $id = New-TaskId
+    $email = "$Alias@microsoft.com"
+    $adoOrg = $script:SarmaConfig.AdoOrg
+    $adoProject = $script:SarmaConfig.AdoProject
+    $storageAccount = $script:SarmaConfig.StorageAccount
+
+    $prompt = @"
+You are building a reviewer style profile for $email.
+
+ADO Organization: $adoOrg
+ADO Project: $adoProject
+Repository: DsMainDev
+
+STEPS:
+1. Use your Azure DevOps MCP tools to list COMPLETED pull requests in DsMainDev where "$email" was a reviewer. Fetch up to 100 PRs (page if needed).
+2. For each PR, fetch comment threads authored by "$email" (use authorEmail filter).
+3. Collect ONLY substantive code review comments — skip:
+   - Vote messages (e.g. "voted 10", "voted -5")
+   - System/bot messages
+   - Comments without threadContext (non-code comments), UNLESS they contain actionable review text
+4. Keep fetching PR threads until you have at least 100 code review comments, or you've exhausted all PRs.
+5. Categorize each comment into one of these buckets:
+   - "Dead code / unused symbols"
+   - "Correctness / edge cases"
+   - "Logging / observability"
+   - "API design / abstractions"
+   - "Test quality / coverage"
+   - "Documentation / comments"
+   - "Typos / formatting"
+   - "Scoping / configuration"
+   - "Other"
+6. Generate a profile in this format:
+
+   # Review Profile: <DisplayName> ($Alias)
+   Generated from <N> code review comments across <M> PRs.
+
+   ## Focus Areas (by frequency)
+   <numbered list sorted by count>
+
+   ## Representative Examples
+   <for each non-empty category, show 2-3 best examples with [file] prefix>
+
+   ## Comment Style
+   - Short/terse (< 50 chars): X/N (%)
+   - Detailed with context: X/N (%)
+   - Questions probing intent: X/N (%)
+   - Long/architectural (> 200 chars): X/N (%)
+
+   ## Review Instructions
+   When reviewing as <DisplayName>, you should:
+   <5-7 bullet points capturing their review personality, focus areas, and style>
+
+7. Save the profile to Azure Blob Storage by running this PowerShell command:
+   `$json = @{ PartitionKey='profile'; RowKey='$Alias'; alias='$Alias'; displayName='<NAME>'; profile=`$profileText; prCount='<M>'; commentCount='<N>'; generatedAt=[datetime]::UtcNow.ToString('o') } | ConvertTo-Json -Depth 5; `$headers = @{ 'Authorization'='Bearer '+(az account get-access-token --resource https://storage.azure.com --query accessToken -o tsv); 'x-ms-version'='2023-11-03'; 'x-ms-date'=[datetime]::UtcNow.ToString('R'); 'Content-Type'='application/json'; 'x-ms-blob-type'='BlockBlob' }; Invoke-RestMethod -Uri 'https://$storageAccount.blob.core.windows.net/sarma/sarmaprofiles/profile/$Alias.json' -Method Put -Headers `$headers -Body `$json`
+
+Do NOT ask for confirmation. Complete the task autonomously.
+"@
+
+    $task = @{
+        id            = $id
+        repo          = $script:SarmaConfig.DefaultRepo
+        branch        = ""
+        taskType      = "profile"
+        prompt        = $prompt
+        status        = "pending"
+        resultBranch  = ""
+        commitMessage = ""
+        prTitle       = ""
+        prDescription = ""
+        reviewers     = ""
+        createdAt     = [datetime]::UtcNow.ToString("o")
+        startedAt     = ""
+        completedAt   = ""
+        workerId      = ""
+        error         = ""
+        workItemId    = ""
+        profileAlias  = $Alias
     }
+
+    Save-Task $task
+    Write-Host "✅ Profile task submitted: $id" -ForegroundColor Green
+    Write-Host "   Alias: $Alias — a worker will build the profile via Copilot MCP"
+    Write-Host "   Run '.\sarma.ps1 profile $Alias --show' once complete"
 }
 
 function Invoke-Status {
