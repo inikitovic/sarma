@@ -82,7 +82,7 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         Write-Host "    Waiting for copilot to load..." -ForegroundColor DarkGray
         $allOutput = ""
         $bootWait = 0
-        $maxBoot = 300
+        $maxBoot = 1800  # 30min — enlistment can be very slow; loop exits on HasExited or readiness
         while ($bootWait -lt $maxBoot -and -not $pty.HasExited) {
             $chunk = $pty.Read(3000)
             $bootWait += 3
