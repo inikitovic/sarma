@@ -134,6 +134,76 @@ function Invoke-Delegate {
     Write-Host "   Branch: dev/$($script:SarmaConfig.UserAlias)/task/$($id.Substring(0,8))"
 }
 
+function Invoke-Revise {
+    param(
+        [int]$PrNumber,
+        [switch]$JustMe,
+        [string]$Repo
+    )
+
+    if (-not $PrNumber) { Write-Host "Error: PR number is required" -ForegroundColor Red; return }
+
+    $id = New-TaskId
+    $repoName = if ($Repo) { ($Repo -split "/")[-1] -replace "\.git$", "" } else { "DsMainDev" }
+    $alias = $script:SarmaConfig.UserAlias
+
+    # Build the revise prompt — copilot will use its ADO MCP to fetch PR details
+    $commentFilter = if ($JustMe) {
+        "Only address comments from $alias. Ignore all other reviewers' comments."
+    } else {
+        "Address ALL active/unresolved review comments from all reviewers."
+    }
+
+    $prompt = @"
+You are revising code based on PR review feedback.
+
+PULL REQUEST: #$PrNumber
+Repository: $repoName
+ADO Organization: $($script:SarmaConfig.AdoOrg)
+ADO Project: $($script:SarmaConfig.AdoProject)
+
+STEPS:
+1. Use your Azure DevOps MCP tools to fetch PR #$PrNumber details and all review comment threads
+2. Read and understand each active/unresolved comment
+3. $commentFilter
+4. Make the necessary code changes to address each comment
+5. After all changes, commit with message: "Address PR #$PrNumber review comments"
+6. Push the changes to the SAME branch (the PR will auto-update)
+7. Reply to each resolved comment thread in the PR indicating what was done
+8. As the VERY LAST step, create a file called .sarma-done in the current working directory:
+   echo done > .sarma-done
+
+Do NOT create a new PR. Push to the existing branch so the PR auto-updates.
+Do NOT ask for confirmation. Complete the task autonomously.
+"@
+
+    $task = @{
+        id            = $id
+        repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
+        branch        = ""  # worker will resolve from PR
+        taskType      = "revise"
+        prompt        = $prompt
+        status        = "pending"
+        resultBranch  = ""  # worker will resolve from PR
+        commitMessage = "Address PR #$PrNumber review comments"
+        prTitle       = ""
+        prDescription = ""
+        reviewers     = ""
+        createdAt     = [datetime]::UtcNow.ToString("o")
+        startedAt     = ""
+        completedAt   = ""
+        workerId      = ""
+        error         = ""
+        workItemId    = ""
+        prNumber      = "$PrNumber"
+        isRevise      = "true"
+    }
+
+    Save-Task $task
+    Write-Host "✅ Revise task submitted: $id" -ForegroundColor Green
+    Write-Host "   PR: #$PrNumber | Repo: $repoName$(if ($JustMe) { ' | Filter: just my comments' })"
+}
+
 function Invoke-Status {
     param([string]$Filter)
 
@@ -246,6 +316,10 @@ switch ($command) {
     "logs"   { Invoke-Logs -TaskId ($p["_positional"][0]) }
     "workers" { Invoke-Workers }
     "prune"  { Invoke-Prune -Completed:($p["completed"] -eq $true) -Failed:($p["failed"] -eq $true) -All:($p["all"] -eq $true) }
+    "revise" {
+        $prNum = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
+        Invoke-Revise -PrNumber $prNum -JustMe:($p["just-me"] -eq $true) -Repo $p["repo"]
+    }
     default {
         Write-Host "Sarma Launcher — distributed coding task orchestrator" -ForegroundColor Cyan
         Write-Host ""
@@ -254,6 +328,7 @@ switch ($command) {
         Write-Host "Commands:"
         Write-Host "  submit      Submit a task with a prompt"
         Write-Host "  delegate    Delegate an ADO work item to a worker"
+        Write-Host "  revise      Address PR review comments"
         Write-Host "  status      Show all tasks"
         Write-Host "  logs        Show task details"
         Write-Host "  workers     Show registered workers"
@@ -262,6 +337,8 @@ switch ($command) {
         Write-Host "Examples:"
         Write-Host '  .\sarma.ps1 submit --prompt "Fix login bug"'
         Write-Host "  .\sarma.ps1 delegate 4946264 --type test"
+        Write-Host "  .\sarma.ps1 revise 1993956"
+        Write-Host "  .\sarma.ps1 revise 1993956 --just-me"
         Write-Host "  .\sarma.ps1 status --filter running"
         Write-Host "  .\sarma.ps1 logs <task-id>"
     }

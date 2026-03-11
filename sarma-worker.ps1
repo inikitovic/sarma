@@ -131,11 +131,26 @@ function Process-Task {
         $repoPath = Initialize-Repo -RepoUrl $task.repo
         Log-Step "[1/3]" "✓ Repo ready at $repoPath" Green
 
-        # 2. Create task branch and checkout
-        Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
-        Log-Verbose "  Base branch: $($task.branch)"
-        $wtPath = New-Worktree -RepoPath $repoPath -BranchName $task.resultBranch -BaseBranch $task.branch
-        Log-Step "[2/3]" "✓ Checked out $($task.resultBranch) at $wtPath" Green
+        # 2. Checkout branch
+        $isRevise = ($task.isRevise -eq "true")
+        if ($isRevise) {
+            # Revise: checkout the existing PR branch (fetch first to get latest)
+            Log-Step "[2/3]" "Checking out existing PR branch…"
+            $null = Invoke-Git -GitArgs @("fetch", "--all") -WorkDir $repoPath
+            # Find the branch from the PR — use the branch that matches the PR
+            # For revise tasks, resultBranch is empty — we need to find it
+            # The prompt tells copilot the PR number, copilot will figure out the branch
+            # Just stay on current branch or checkout master
+            $null = Invoke-Git -GitArgs @("checkout", $script:SarmaConfig.DefaultBranch) -WorkDir $repoPath
+            $wtPath = $repoPath
+            Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (copilot will checkout PR branch)" Green
+        } else {
+            # Normal task: create new branch
+            Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
+            Log-Verbose "  Base branch: $($task.branch)"
+            $wtPath = New-Worktree -RepoPath $repoPath -BranchName $task.resultBranch -BaseBranch $task.branch
+            Log-Step "[2/3]" "✓ Checked out $($task.resultBranch) at $wtPath" Green
+        }
 
         # 3. Craft prompt and launch agent
         $reviewers = if ($task.reviewers) { $task.reviewers } else { "" }
@@ -143,7 +158,12 @@ function Process-Task {
         $adoProject = if ($task.adoProject) { $task.adoProject } else { $script:SarmaConfig.AdoProject }
         $repoName = ($task.repo -split "/")[-1] -replace "\.git$", ""
 
-        $fullPrompt = @"
+        if ($isRevise) {
+            # Revise: prompt already has all instructions from Invoke-Revise
+            $fullPrompt = $task.prompt
+        } else {
+            # Normal task: add branch/commit/PR instructions
+            $fullPrompt = @"
 $($task.prompt)
 
 == INSTRUCTIONS ==
@@ -165,6 +185,7 @@ $(if ($reviewers) { "   - Reviewers: $reviewers" })
 
 Do NOT ask for confirmation. Complete the task autonomously.
 "@
+        }
 
         Log-Step "[3/3]" "Launching agent (interactive SendKeys)…"
         Log-Verbose "  Working dir: $wtPath"
