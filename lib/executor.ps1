@@ -115,7 +115,7 @@ function Invoke-CopilotAgent {
         $ready = $false
         foreach ($f in (Get-ChildItem $sessionDir.FullName -File -ErrorAction SilentlyContinue)) {
             $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match 'Loaded \d+ MCP server') {
+            if ($content -match 'Loaded \d+ MCP server|Environment loaded') {
                 $ready = $true
                 break
             }
