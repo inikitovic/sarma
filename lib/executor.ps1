@@ -111,10 +111,12 @@ function Invoke-CopilotAgent {
 
     # 2. Switch to autopilot mode (two Shift+Tabs)
     Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 2
+    Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 3
 
     # 3. Permissions dialog appears — option 1 (Enable all) is pre-selected, just Enter
-    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 2
+    #    Extra delay to let the TUI dialog fully render
+    Start-Sleep 3
+    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
 
     # 4. Type prompt and submit
     Send-ToAgent -Process $proc -Keys $safePrompt -PostDelay 1
