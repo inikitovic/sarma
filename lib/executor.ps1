@@ -42,13 +42,30 @@ function Invoke-CopilotAgent {
     Write-Host "    ─── launching agency copilot ───" -ForegroundColor DarkCyan
     $startTime = Get-Date
 
-    # Launch interactive agency copilot in a new window, tee output to log
+    # Launch interactive agency copilot in a new window (no Tee — breaks interactive terminal)
+    $escapedWorkDir = $WorkDir -replace "'", "''"
     $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', `
-        "Set-Location '$escapedWorkDir'; agency copilot 2>&1 | Tee-Object -FilePath '$($logFile -replace "'","''")'" `
+        "Set-Location '$escapedWorkDir'; agency copilot" `
         -PassThru
 
-    # Wait for agency copilot to boot
-    Start-Sleep 15
+    # Wait for copilot to fully load (MCP servers, etc.)
+    # Poll the agency log directory for a new session to confirm it's ready
+    Write-Host "    Waiting for copilot to load…" -ForegroundColor DarkGray
+    $agencyLogDir = "$env:USERPROFILE\.agency\logs"
+    $preSessionCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
+    $bootWait = 0
+    $maxBootWait = 60
+    while ($bootWait -lt $maxBootWait) {
+        Start-Sleep 3
+        $bootWait += 3
+        $currentCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
+        if ($currentCount -gt $preSessionCount) {
+            # New session appeared — copilot is loading
+            Start-Sleep 10  # give it extra time to finish loading MCP servers
+            break
+        }
+    }
+    Write-Host "    Copilot loaded (${bootWait}s)" -ForegroundColor DarkGray
 
     # Automate the interactive session
     $wshell = New-Object -ComObject WScript.Shell
@@ -121,12 +138,19 @@ function Invoke-CopilotAgent {
     $endTime = Get-Date
     $duration = [Math]::Round(($endTime - $startTime).TotalSeconds, 1)
 
-    # Try to extract resume session ID from the log
+    # Try to extract resume session ID from the agency log directory
     $sessionId = ""
-    if (Test-Path $logFile) {
-        $logContent = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-        if ($logContent -match '--resume=([a-f0-9\-]+)') {
-            $sessionId = $Matches[1]
+    $agencyLogDir = "$env:USERPROFILE\.agency\logs"
+    $latestSession = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latestSession) {
+        # Check for resume ID in session logs
+        $sessionLogs = Get-ChildItem $latestSession.FullName -File -ErrorAction SilentlyContinue
+        foreach ($f in $sessionLogs) {
+            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            if ($content -match '--resume=([a-f0-9\-]+)') {
+                $sessionId = $Matches[1]
+                break
+            }
         }
     }
 
