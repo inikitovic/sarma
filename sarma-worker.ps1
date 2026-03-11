@@ -136,13 +136,14 @@ function Process-Task {
         # 2. Checkout branch
         $isRevise = ($task.isRevise -eq "true")
         $isReserve = ($task.isReserve -eq "true")
-        if ($isRevise -or $isReserve) {
-            # Revise/Reserve: copilot will checkout the PR branch via MCP
+        $isReview = ($task.isReview -eq "true")
+        if ($isRevise -or $isReserve -or $isReview) {
+            # Revise/Reserve/Review: copilot will checkout the PR branch via MCP
             Log-Step "[2/3]" "Preparing for PR #$($task.prNumber)…"
             $null = Invoke-Git -GitArgs @("fetch", "--all") -WorkDir $repoPath
             $null = Invoke-Git -GitArgs @("checkout", $script:SarmaConfig.DefaultBranch) -WorkDir $repoPath
             $wtPath = $repoPath
-            Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (agent will checkout PR branch)" Green
+            Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (agent will handle PR)" Green
         } else {
             # Normal task: create new branch
             Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
@@ -157,8 +158,8 @@ function Process-Task {
         $adoProject = if ($task.adoProject) { $task.adoProject } else { $script:SarmaConfig.AdoProject }
         $repoName = ($task.repo -split "/")[-1] -replace "\.git$", ""
 
-        if ($isRevise -or $isReserve) {
-            # Revise/Reserve: prompt already has all instructions
+        if ($isRevise -or $isReserve -or $isReview) {
+            # Revise/Reserve/Review: prompt already has all instructions
             $fullPrompt = $task.prompt
         } else {
             # Normal task: add branch/commit/PR instructions
@@ -184,7 +185,7 @@ Do NOT ask for confirmation. Complete the task autonomously.
 "@
         }
 
-        Log-Step "[3/3]" "Launching agent (interactive SendKeys)…"
+        Log-Step "[3/3]" "Launching agent (ConPTY)…"
         Log-Verbose "  Working dir: $wtPath"
         Log-Verbose "  Prompt length: $($fullPrompt.Length) chars"
         Log-Verbose "  ADO target: $adoOrg / $adoProject / $repoName"

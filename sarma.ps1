@@ -19,6 +19,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 . "$scriptDir\lib\table.ps1"
 . "$scriptDir\lib\pr.ps1"
 . "$scriptDir\lib\ado-wit.ps1"
+. "$scriptDir\lib\profile.ps1"
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -260,6 +261,138 @@ The developer will work manually. Do NOT make any code changes yourself.
     Write-Host "   Run '.\sarma-worker.ps1 release' on the Dev Box when done"
 }
 
+function Invoke-Review {
+    param(
+        [int]$PrNumber,
+        [string]$Alias = "",
+        [string]$Repo
+    )
+
+    if (-not $PrNumber) { Write-Host "Error: PR number is required" -ForegroundColor Red; return }
+
+    $id = New-TaskId
+    $repoName = if ($Repo) { ($Repo -split "/")[-1] -replace "\.git$", "" } else { "DsMainDev" }
+    $adoOrg = $script:SarmaConfig.AdoOrg
+    $adoProject = $script:SarmaConfig.AdoProject
+
+    # Load reviewer profile if alias provided
+    $personaContext = ""
+    if ($Alias) {
+        Write-Host "Loading review profile for $Alias..."
+        $profile = Get-ReviewerProfile -Alias $Alias
+        if ($profile -and $profile.profile) {
+            $personaContext = @"
+
+REVIEWER PERSONA:
+You are reviewing this PR as $($profile.displayName) ($Alias). Match their review style exactly.
+
+$($profile.profile)
+
+Apply this reviewer's focus areas, comment style, and severity calibration to your review.
+"@
+            Write-Host "  ✅ Profile loaded ($($profile.commentCount) comments, $($profile.prCount) PRs)" -ForegroundColor Green
+        } else {
+            Write-Host "  ⚠ No profile found for $Alias. Run 'sarma profile $Alias' first." -ForegroundColor Yellow
+            Write-Host "  Proceeding with generic review." -ForegroundColor Yellow
+        }
+    }
+
+    $prompt = @"
+You are performing a code review of PR #$PrNumber.
+
+PULL REQUEST: #$PrNumber
+Repository: $repoName
+ADO Organization: $adoOrg
+ADO Project: $adoProject
+$personaContext
+STEPS:
+1. Use your Azure DevOps MCP tools to fetch PR #$PrNumber details from org "$adoOrg" project "$adoProject" repo "$repoName"
+2. Get the PR diff — examine all changed files
+3. Review every changed file thoroughly, checking for:
+   - Bugs, logic errors, edge cases
+   - Missing error handling or validation
+   - Dead code or unused symbols
+   - Logging and observability gaps
+   - Test coverage gaps
+   - API design issues
+   - Documentation needs
+   - Typos and formatting
+4. For each issue found, create a review comment thread on the PR at the specific file and line
+5. Use appropriate severity: mark blocking issues clearly, label nits as "nit:"
+6. If no issues found, leave a general comment that the PR looks good
+
+Do NOT make any code changes. This is a review-only task.
+Do NOT ask for confirmation. Complete the review autonomously.
+"@
+
+    $task = @{
+        id            = $id
+        repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
+        branch        = ""
+        taskType      = "review"
+        prompt        = $prompt
+        status        = "pending"
+        resultBranch  = ""
+        commitMessage = ""
+        prTitle       = ""
+        prDescription = ""
+        reviewers     = ""
+        createdAt     = [datetime]::UtcNow.ToString("o")
+        startedAt     = ""
+        completedAt   = ""
+        workerId      = ""
+        error         = ""
+        workItemId    = ""
+        prNumber      = "$PrNumber"
+        isReview      = "true"
+        reviewAlias   = $Alias
+    }
+
+    Save-Task $task
+    Write-Host "✅ Review task submitted: $id" -ForegroundColor Green
+    Write-Host "   PR: #$PrNumber | Repo: $repoName$(if ($Alias) { " | Persona: $Alias" })"
+}
+
+function Invoke-Profile {
+    param(
+        [string]$Alias,
+        [switch]$Refresh,
+        [switch]$Show
+    )
+
+    if (-not $Alias) { Write-Host "Error: alias is required" -ForegroundColor Red; return }
+
+    if ($Show) {
+        $profile = Get-ReviewerProfile -Alias $Alias
+        if ($profile -and $profile.profile) {
+            Write-Host "Profile: $($profile.displayName) ($Alias)" -ForegroundColor Cyan
+            Write-Host "Generated: $($profile.generatedAt) | PRs: $($profile.prCount) | Comments: $($profile.commentCount)"
+            Write-Host ""
+            Write-Host $profile.profile
+        } else {
+            Write-Host "No profile found for $Alias. Run 'sarma profile $Alias' to generate." -ForegroundColor Yellow
+        }
+        return
+    }
+
+    if (-not $Refresh) {
+        $existing = Get-ReviewerProfile -Alias $Alias
+        if ($existing -and $existing.profile) {
+            Write-Host "Profile already exists for $Alias (generated $($existing.generatedAt))" -ForegroundColor Yellow
+            Write-Host "Use --refresh to regenerate."
+            return
+        }
+    }
+
+    Write-Host "Building review profile for $Alias..." -ForegroundColor Cyan
+    $result = Build-ReviewerProfile -Alias $Alias
+    if ($result) {
+        Write-Host ""
+        Write-Host "Preview (first 500 chars):" -ForegroundColor DarkGray
+        Write-Host ($result.Substring(0, [Math]::Min(500, $result.Length))) -ForegroundColor DarkGray
+    }
+}
+
 function Invoke-Status {
     param([string]$Filter)
 
@@ -380,6 +513,14 @@ switch ($command) {
         $prNum = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
         Invoke-Reserve -PrNumber $prNum -Repo $p["repo"]
     }
+    "review" {
+        $prNum = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
+        Invoke-Review -PrNumber $prNum -Alias ($p["alias"] ?? "") -Repo $p["repo"]
+    }
+    "profile" {
+        $alias = if ($p["_positional"].Count -gt 0) { $p["_positional"][0] } else { "" }
+        Invoke-Profile -Alias $alias -Refresh:($p["refresh"] -eq $true) -Show:($p["show"] -eq $true)
+    }
     default {
         Write-Host "Sarma Launcher — distributed coding task orchestrator" -ForegroundColor Cyan
         Write-Host ""
@@ -389,7 +530,9 @@ switch ($command) {
         Write-Host "  submit      Submit a task with a prompt"
         Write-Host "  delegate    Delegate an ADO work item to a worker"
         Write-Host "  revise      Address PR review comments"
+        Write-Host "  review      Review a PR (optionally as a specific reviewer)"
         Write-Host "  reserve     Reserve a Dev Box for manual PR work"
+        Write-Host "  profile     Build/show a reviewer's review style profile"
         Write-Host "  status      Show all tasks"
         Write-Host "  logs        Show task details"
         Write-Host "  workers     Show registered workers"
@@ -399,8 +542,13 @@ switch ($command) {
         Write-Host '  .\sarma.ps1 submit --prompt "Fix login bug"'
         Write-Host "  .\sarma.ps1 delegate 4946264 --type test"
         Write-Host "  .\sarma.ps1 revise 1993956"
-        Write-Host "  .\sarma.ps1 reserve 1993956"
         Write-Host "  .\sarma.ps1 revise 1993956 --just-me"
+        Write-Host "  .\sarma.ps1 review 1993956"
+        Write-Host "  .\sarma.ps1 review 1993956 --alias tisonjic"
+        Write-Host "  .\sarma.ps1 profile tisonjic"
+        Write-Host "  .\sarma.ps1 profile tisonjic --show"
+        Write-Host "  .\sarma.ps1 profile tisonjic --refresh"
+        Write-Host "  .\sarma.ps1 reserve 1993956"
         Write-Host "  .\sarma.ps1 status --filter running"
         Write-Host "  .\sarma.ps1 logs <task-id>"
     }
