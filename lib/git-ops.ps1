@@ -1,12 +1,29 @@
-# lib\git-ops.ps1 — Git worktree, commit, push operations
+# lib\git-ops.ps1 — Git operations with retry for transient errors
 
 function Invoke-Git {
-    param([string[]]$GitArgs, [string]$WorkDir = ".")
-    $result = & git -C $WorkDir @GitArgs 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) {
+    param(
+        [string[]]$GitArgs,
+        [string]$WorkDir = ".",
+        [int]$MaxRetries = 3,
+        [int]$RetryDelaySec = 10
+    )
+
+    for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        $result = & git -C $WorkDir @GitArgs 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            return $result.Trim()
+        }
+
+        # Retry on transient errors (503, 429, network issues)
+        if ($result -match '50[0-9]|429|Could not resolve|Connection refused|Connection reset|SSL' -and $attempt -lt $MaxRetries) {
+            Write-Host "    git $($GitArgs[0]) failed (attempt $attempt/$MaxRetries) — retrying in ${RetryDelaySec}s…" -ForegroundColor Yellow
+            Start-Sleep $RetryDelaySec
+            $RetryDelaySec *= 2  # exponential backoff
+            continue
+        }
+
         throw "git $($GitArgs -join ' ') failed (rc=$LASTEXITCODE): $result"
     }
-    return $result.Trim()
 }
 
 function Initialize-Repo {
