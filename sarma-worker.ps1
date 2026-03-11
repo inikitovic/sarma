@@ -89,7 +89,10 @@ function Update-TaskStatus {
         [hashtable]$ExtraFields = @{}
     )
     Log-Verbose "Updating task $($TaskId.Substring(0,8)) → status=$Status $(if ($ExtraFields.Count) { $ExtraFields.Keys -join ',' })"
-    $props = @{ status = $Status } + $ExtraFields
+    $props = @{ status = $Status }
+    foreach ($k in $ExtraFields.Keys) {
+        $props[$k] = $ExtraFields[$k]
+    }
     Set-SarmaTableEntity -TableName "sarmatasks" -PartitionKey "task" -RowKey $TaskId -Properties $props
 }
 
@@ -189,7 +192,6 @@ Do NOT ask for confirmation. Complete the task autonomously.
 
         # Done — agent handled commit + push + PR
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
-        $sessionFields.status = "completed"
         Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields $sessionFields
         Log-Info "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" Green
 

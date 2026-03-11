@@ -81,7 +81,7 @@ function Invoke-CopilotAgent {
 
     # Launch agency copilot in a new window
     $escapedWorkDir = $WorkDir -replace "'", "''"
-    $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', `
+    $proc = Start-Process pwsh -ArgumentList '-Command', `
         "Set-Location '$escapedWorkDir'; agency copilot" `
         -PassThru
 
@@ -141,11 +141,12 @@ function Invoke-CopilotAgent {
 
     if (Test-Path $doneFile) {
         $agentCompleted = $true
-        Write-Host "    Agent completed - shutting down session..." -ForegroundColor Green
+        Write-Host "    Agent completed - waiting for copilot to settle..." -ForegroundColor Green
         Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
-        Start-Sleep 2
-        Send-ToAgent -Process $proc -Keys "^c" -PostDelay 2
+        # Wait for copilot to finish any remaining output after creating .sarma-done
+        Start-Sleep 10
         Send-ToAgent -Process $proc -Keys "^c" -PostDelay 3
+        Send-ToAgent -Process $proc -Keys "^c" -PostDelay 5
     } elseif ($waited -ge $maxWait) {
         Write-Host "    Timeout - killing agent session..." -ForegroundColor Yellow
         Send-ToAgent -Process $proc -Keys "^c" -PostDelay 2
