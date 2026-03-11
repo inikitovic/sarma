@@ -20,12 +20,14 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $taskTypes = $script:SarmaConfig.WorkerTaskTypes
 $script:Verbose = $false
+$script:ReleaseMode = $false
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
         "--types"   { $i++; $taskTypes = $args[$i] -split "," }
         "--verbose" { $script:Verbose = $true }
         "-v"        { $script:Verbose = $true }
+        "release"   { $script:ReleaseMode = $true }
     }
 }
 
@@ -133,17 +135,14 @@ function Process-Task {
 
         # 2. Checkout branch
         $isRevise = ($task.isRevise -eq "true")
-        if ($isRevise) {
-            # Revise: checkout the existing PR branch (fetch first to get latest)
-            Log-Step "[2/3]" "Checking out existing PR branch…"
+        $isReserve = ($task.isReserve -eq "true")
+        if ($isRevise -or $isReserve) {
+            # Revise/Reserve: copilot will checkout the PR branch via MCP
+            Log-Step "[2/3]" "Preparing for PR #$($task.prNumber)…"
             $null = Invoke-Git -GitArgs @("fetch", "--all") -WorkDir $repoPath
-            # Find the branch from the PR — use the branch that matches the PR
-            # For revise tasks, resultBranch is empty — we need to find it
-            # The prompt tells copilot the PR number, copilot will figure out the branch
-            # Just stay on current branch or checkout master
             $null = Invoke-Git -GitArgs @("checkout", $script:SarmaConfig.DefaultBranch) -WorkDir $repoPath
             $wtPath = $repoPath
-            Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (copilot will checkout PR branch)" Green
+            Log-Step "[2/3]" "✓ On $($script:SarmaConfig.DefaultBranch) (agent will checkout PR branch)" Green
         } else {
             # Normal task: create new branch
             Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
@@ -158,8 +157,8 @@ function Process-Task {
         $adoProject = if ($task.adoProject) { $task.adoProject } else { $script:SarmaConfig.AdoProject }
         $repoName = ($task.repo -split "/")[-1] -replace "\.git$", ""
 
-        if ($isRevise) {
-            # Revise: prompt already has all instructions from Invoke-Revise
+        if ($isRevise -or $isReserve) {
+            # Revise/Reserve: prompt already has all instructions
             $fullPrompt = $task.prompt
         } else {
             # Normal task: add branch/commit/PR instructions
@@ -211,10 +210,49 @@ Do NOT ask for confirmation. Complete the task autonomously.
             throw "Agent failed (rc=$($result.ExitCode)): $($result.Stderr)"
         }
 
-        # Done — agent handled commit + push + PR
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
-        Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields $sessionFields
-        Log-Info "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" Green
+
+        if ($isReserve) {
+            # RESERVE MODE — block this worker until released
+            Update-TaskStatus -TaskId $TaskId -Status "reserved" -ExtraFields $sessionFields
+            Log-Info "═══ Dev Box RESERVED for PR #$($task.prNumber) (${elapsed}s setup) ═══" Cyan
+            Log-Info "  Worker $workerId is now blocked for manual work." Cyan
+            Log-Info "  Run '.\sarma-worker.ps1 release' when done." Cyan
+
+            # Update worker status to reserved
+            Set-SarmaTableEntity -TableName "sarmaworkers" -PartitionKey "worker" -RowKey $workerId -Properties @{
+                lastSeen      = [datetime]::UtcNow.ToString("o")
+                taskTypes     = ($taskTypes -join ",")
+                currentTaskId = $TaskId
+                reserved      = "true"
+                reservedPR    = $task.prNumber
+            }
+
+            # Block — wait for release file
+            $releaseFile = Join-Path $repoPath ".sarma-release"
+            Log-Info "  Waiting for release (polling .sarma-release or run sarma-worker.ps1 release)…" DarkGray
+            while (-not (Test-Path $releaseFile)) {
+                Start-Sleep 5
+            }
+            Remove-Item $releaseFile -Force -ErrorAction SilentlyContinue
+            Log-Info "═══ Dev Box RELEASED ═══" Green
+
+            # Unblock worker
+            Set-SarmaTableEntity -TableName "sarmaworkers" -PartitionKey "worker" -RowKey $workerId -Properties @{
+                lastSeen      = [datetime]::UtcNow.ToString("o")
+                taskTypes     = ($taskTypes -join ",")
+                currentTaskId = ""
+                reserved      = ""
+                reservedPR    = ""
+            }
+            Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields @{
+                completedAt = [datetime]::UtcNow.ToString("o")
+            }
+        } else {
+            # Normal completion
+            Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields $sessionFields
+            Log-Info "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" Green
+        }
 
     } catch {
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
@@ -234,6 +272,17 @@ Do NOT ask for confirmation. Complete the task autonomously.
     }
 
     Update-Heartbeat
+}
+
+# ── Release Handler ──────────────────────────────────────────────
+
+if ($script:ReleaseMode) {
+    $repoPath = $script:SarmaConfig.LocalRepo
+    if (-not $repoPath) { $repoPath = "." }
+    $releaseFile = Join-Path $repoPath ".sarma-release"
+    "released" | Set-Content $releaseFile -Encoding UTF8
+    Write-Host "✅ Dev Box released. Worker will resume polling." -ForegroundColor Green
+    exit 0
 }
 
 # ── Main Loop ────────────────────────────────────────────────────

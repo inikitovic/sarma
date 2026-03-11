@@ -204,6 +204,66 @@ Do NOT ask for confirmation. Complete the task autonomously.
     Write-Host "   PR: #$PrNumber | Repo: $repoName$(if ($JustMe) { ' | Filter: just my comments' })"
 }
 
+function Invoke-Reserve {
+    param(
+        [int]$PrNumber,
+        [string]$Repo
+    )
+
+    if (-not $PrNumber) { Write-Host "Error: PR number is required" -ForegroundColor Red; return }
+
+    $id = New-TaskId
+    $repoName = if ($Repo) { ($Repo -split "/")[-1] -replace "\.git$", "" } else { "DsMainDev" }
+    $adoOrg = $script:SarmaConfig.AdoOrg
+    $adoProject = $script:SarmaConfig.AdoProject
+
+    $prompt = @"
+RESERVE MODE — Manual debugging session for PR #$PrNumber
+
+STEPS:
+1. Use your Azure DevOps MCP tools to fetch PR #$PrNumber from org "$adoOrg" project "$adoProject" repo "$repoName"
+2. Get the source branch name from the PR
+3. Checkout that branch: git fetch --all && git checkout <source-branch>
+4. Clean build artifacts by running these commands:
+   rd /s /q obj QLocal debug retail testbin oacr_temp __cacheOutput \CloudBuildCache 2>nul
+5. Open the SQL Server solution:
+   slngen "%BaseDir%\Sql\Ntdbms\ksource\bin\sqlservr.vcxproj"
+6. Create .sarma-done to signal setup is complete:
+   echo done > .sarma-done
+
+After creating .sarma-done, the worker will keep this Dev Box RESERVED.
+The developer will work manually. Do NOT make any code changes yourself.
+"@
+
+    $task = @{
+        id            = $id
+        repo          = if ($Repo) { $Repo } else { $script:SarmaConfig.DefaultRepo }
+        branch        = ""
+        taskType      = "reserve"
+        prompt        = $prompt
+        status        = "pending"
+        resultBranch  = ""
+        commitMessage = ""
+        prTitle       = ""
+        prDescription = ""
+        reviewers     = ""
+        createdAt     = [datetime]::UtcNow.ToString("o")
+        startedAt     = ""
+        completedAt   = ""
+        workerId      = ""
+        error         = ""
+        workItemId    = ""
+        prNumber      = "$PrNumber"
+        isReserve     = "true"
+    }
+
+    Save-Task $task
+    Write-Host "✅ Reserve task submitted: $id" -ForegroundColor Green
+    Write-Host "   PR: #$PrNumber — a Dev Box will be reserved for manual work"
+    Write-Host "   Run '.\sarma.ps1 status' to see which Dev Box picks it up"
+    Write-Host "   Run '.\sarma-worker.ps1 release' on the Dev Box when done"
+}
+
 function Invoke-Status {
     param([string]$Filter)
 
@@ -320,6 +380,10 @@ switch ($command) {
         $prNum = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
         Invoke-Revise -PrNumber $prNum -JustMe:($p["just-me"] -eq $true) -Repo $p["repo"]
     }
+    "reserve" {
+        $prNum = if ($p["_positional"].Count -gt 0) { [int]$p["_positional"][0] } else { 0 }
+        Invoke-Reserve -PrNumber $prNum -Repo $p["repo"]
+    }
     default {
         Write-Host "Sarma Launcher — distributed coding task orchestrator" -ForegroundColor Cyan
         Write-Host ""
@@ -329,6 +393,7 @@ switch ($command) {
         Write-Host "  submit      Submit a task with a prompt"
         Write-Host "  delegate    Delegate an ADO work item to a worker"
         Write-Host "  revise      Address PR review comments"
+        Write-Host "  reserve     Reserve a Dev Box for manual PR work"
         Write-Host "  status      Show all tasks"
         Write-Host "  logs        Show task details"
         Write-Host "  workers     Show registered workers"
@@ -338,6 +403,7 @@ switch ($command) {
         Write-Host '  .\sarma.ps1 submit --prompt "Fix login bug"'
         Write-Host "  .\sarma.ps1 delegate 4946264 --type test"
         Write-Host "  .\sarma.ps1 revise 1993956"
+        Write-Host "  .\sarma.ps1 reserve 1993956"
         Write-Host "  .\sarma.ps1 revise 1993956 --just-me"
         Write-Host "  .\sarma.ps1 status --filter running"
         Write-Host "  .\sarma.ps1 logs <task-id>"
