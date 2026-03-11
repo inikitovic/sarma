@@ -1,59 +1,21 @@
-# lib\executor.ps1 — Launch agency copilot interactively via Win32 + SendKeys
+# lib/executor.ps1 — Launch agency copilot via ConPTY (no window focus required)
 
-# Win32 API for reliable window focus
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32Focus {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    public const int SW_RESTORE = 9;
+. "$PSScriptRoot\conpty.ps1"
 
-    public static bool FocusWindow(IntPtr hWnd) {
-        ShowWindow(hWnd, SW_RESTORE);
-        return SetForegroundWindow(hWnd);
-    }
-}
-"@ -ErrorAction SilentlyContinue
-
-function Focus-AgentWindow {
-    param([System.Diagnostics.Process]$Process)
-    for ($retry = 0; $retry -lt 10; $retry++) {
-        try {
-            $Process.Refresh()
-            $hwnd = $Process.MainWindowHandle
-            if ($hwnd -ne [IntPtr]::Zero) {
-                if ([Win32Focus]::FocusWindow($hwnd)) {
-                    Start-Sleep -Milliseconds 300
-                    return $true
-                }
-            }
-        } catch {}
-        Start-Sleep 1
-    }
-    return $false
-}
-
-function Send-ToAgent {
-    param(
-        [System.Diagnostics.Process]$Process,
-        [string]$Keys,
-        [int]$PostDelay = 1
-    )
-    $wshell = New-Object -ComObject WScript.Shell
-    $null = Focus-AgentWindow -Process $Process
-    Start-Sleep -Milliseconds 200
-    $wshell.SendKeys($Keys)
-    Start-Sleep $PostDelay
+function Strip-Ansi {
+    param([string]$Text)
+    # Strip ANSI escape sequences (CSI, OSC) from terminal output
+    return $Text -replace '\x1b\[[0-9;]*[a-zA-Z]', '' -replace '\x1b\][^\x07]*\x07', '' -replace '\x1b\[[\?0-9;]*[a-zA-Z]', ''
 }
 
 function Invoke-CopilotAgent {
     <#
     .SYNOPSIS
-        Launch agency copilot in a new interactive terminal window.
+        Launch agency copilot via ConPTY pseudo-terminal.
+        Writes commands through pipes — no window focus or SendKeys needed.
     .PARAMETER KeepAlive
-        If set, don't send Ctrl+C after .sarma-done — leave the copilot session
-        open for manual use (used by reserve/revise tasks).
+        If set, after task completes, open a visible terminal with --resume
+        so the user can continue the copilot session interactively.
     #>
     param(
         [Parameter(Mandatory)][string]$Prompt,
@@ -71,14 +33,28 @@ function Invoke-CopilotAgent {
         }
     }
 
-    # Write task file
-    $taskFile = Join-Path $WorkDir ".sarma-task.md"
-    $Prompt | Set-Content -Path $taskFile -Encoding UTF8
+    # Write task file to temp directory (keeps repo clean)
+    $taskDir = Join-Path $env:TEMP "sarma"
+    if (-not (Test-Path $taskDir)) { New-Item -ItemType Directory -Path $taskDir -Force | Out-Null }
+    $taskId = [guid]::NewGuid().ToString().Substring(0, 8)
+    $taskFile = Join-Path $taskDir "task-$taskId.md"
+    $doneFile = Join-Path $taskDir "done-$taskId"
 
-    $shortPrompt = "Read the file .sarma-task.md in the current directory and complete all the work described in it. Follow every instruction exactly."
-    $safePrompt = $shortPrompt -replace '([+^%~{}[\]()])', '{$1}'
+    # Append completion signal instruction to prompt
+    $doneFileFwd = $doneFile -replace '\\', '/'
+    $fullPrompt = $Prompt + @"
 
-    Write-Host "    --- launching agency copilot ---" -ForegroundColor DarkCyan
+
+COMPLETION SIGNAL: When ALL work above is finished, as the VERY LAST step, run:
+    echo done > "$doneFileFwd"
+This signals the orchestrator that you are done. Do NOT skip this step.
+"@
+    $fullPrompt | Set-Content -Path $taskFile -Encoding UTF8
+
+    $taskFileFwd = $taskFile -replace '\\', '/'
+    $shortPrompt = "Read the file '$taskFileFwd' and complete all the work described in it. Follow every instruction exactly."
+
+    Write-Host "    --- launching agency copilot (ConPTY) ---" -ForegroundColor DarkCyan
     $startTime = Get-Date
 
     # Pre-authenticate Azure tokens
@@ -87,142 +63,160 @@ function Invoke-CopilotAgent {
     $null = az account get-access-token --resource "https://storage.azure.com" 2>&1
     $null = az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" 2>&1
 
-    # Source init.ps1 before agency copilot for build environment (SDK, BaseDir, etc.)
+    # Build command line for pwsh inside ConPTY
     $escapedWorkDir = $WorkDir -replace "'", "''"
     $initScript = Join-Path $WorkDir "init.ps1"
     $initCmd = if (Test-Path $initScript) { ". '$($initScript -replace "'","''")'; " } else { "" }
+    $cmdLine = "pwsh -NoLogo -Command `"${initCmd}Set-Location '$escapedWorkDir'; agency copilot`""
 
-    # KeepAlive: use -NoExit so window stays open after copilot exits
-    $procArgs = @('-Command', "${initCmd}Set-Location '$escapedWorkDir'; agency copilot")
-    if ($KeepAlive) { $procArgs = @('-NoExit') + $procArgs }
-
-    $proc = Start-Process pwsh -ArgumentList $procArgs -PassThru
-
-    # Wait for copilot to fully load — poll agency logs for readiness
-    Write-Host "    Waiting for copilot to load..." -ForegroundColor DarkGray
-    $agencyLogDir = "$env:USERPROFILE\.agency\logs"
-    $launchTime = Get-Date
-    $bootWait = 0
-    $sessionDir = $null
-    while ($bootWait -lt 300) {
-        Start-Sleep 3
-        $bootWait += 3
-        # Look for a session directory created AFTER we launched
-        $sessionDir = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -gt $launchTime } | Select-Object -First 1
-        if (-not $sessionDir) { continue }
-
-        # Check session logs for "Loaded X MCP server(s)" — means copilot is ready
-        $ready = $false
-        foreach ($f in (Get-ChildItem $sessionDir.FullName -File -ErrorAction SilentlyContinue)) {
-            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match 'Loaded \d+ MCP server|Environment loaded:') {
-                $ready = $true
-                break
-            }
-        }
-        if ($ready) {
-            Write-Host "    Copilot ready (${bootWait}s)" -ForegroundColor DarkGray
-            Start-Sleep 3  # small buffer for UI to render
-            break
-        }
-    }
-    Write-Host "    Copilot ready (${bootWait}s)" -ForegroundColor DarkGray
-
-    # Send commands
-    Write-Host "    Sending commands..." -ForegroundColor DarkGray
-
-    Send-ToAgent -Process $proc -Keys " " -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "{BACKSPACE}" -PostDelay 2
-
-    Send-ToAgent -Process $proc -Keys "/allow-all" -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
-
-    Send-ToAgent -Process $proc -Keys "/model claude-opus-4.6-1m" -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
-
-    Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 2
-
-    Send-ToAgent -Process $proc -Keys $safePrompt -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 1
-
-    Write-Host "    Prompt sent - agent is working..." -ForegroundColor DarkGray
-
-    # Poll for .sarma-done
-    $doneFile = Join-Path $WorkDir ".sarma-done"
-    $maxWait = $script:SarmaConfig.ExecutorTimeout
+    $pty = New-Object SarmaConPty
+    $exitCode = 0
     $agentCompleted = $false
+    $sessionId = ""
 
-    Write-Host "    Waiting for agent to complete (polling .sarma-done)..." -ForegroundColor DarkGray
-    $waited = 0
-    while (-not (Test-Path $doneFile) -and -not $proc.HasExited -and $waited -lt $maxWait) {
-        Start-Sleep 5
-        $waited += 5
-    }
+    try {
+        $pty.Start($cmdLine, $WorkDir)
+        Write-Host "    Process started (PID: $($pty.ProcessId))" -ForegroundColor DarkGray
 
-    if (Test-Path $doneFile) {
-        $agentCompleted = $true
-        Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
-
-        if ($KeepAlive) {
-            Write-Host "    Agent completed - copilot session kept alive for manual use" -ForegroundColor Green
-        } else {
-            Write-Host "    Agent completed - shutting down copilot..." -ForegroundColor Green
-            Start-Sleep 10
-            $null = Focus-AgentWindow -Process $proc
-            $wshell = New-Object -ComObject WScript.Shell
-            $wshell.SendKeys("^c")
-            Start-Sleep -Milliseconds 500
-            $wshell.SendKeys("^c")
-            Start-Sleep 3
-            Send-ToAgent -Process $proc -Keys "exit" -PostDelay 1
-            Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
-        }
-    } elseif ($waited -ge $maxWait) {
-        Write-Host "    Timeout - killing agent session..." -ForegroundColor Yellow
-        $null = Focus-AgentWindow -Process $proc
-        $wshell = New-Object -ComObject WScript.Shell
-        $wshell.SendKeys("^c")
-        Start-Sleep -Milliseconds 500
-        $wshell.SendKeys("^c")
-        Start-Sleep 3
-    }
-
-    # Wait for exit (skip if KeepAlive)
-    if (-not $KeepAlive) {
-        if (-not $proc.HasExited) {
-            $proc.WaitForExit(10000) | Out-Null
-            if (-not $proc.HasExited) {
-                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        # ── Wait for copilot to fully load ────────────────────
+        Write-Host "    Waiting for copilot to load..." -ForegroundColor DarkGray
+        $allOutput = ""
+        $bootWait = 0
+        $maxBoot = 300
+        while ($bootWait -lt $maxBoot -and -not $pty.HasExited) {
+            $chunk = $pty.Read(3000)
+            $bootWait += 3
+            if ($chunk) {
+                $allOutput += $chunk
+                $clean = Strip-Ansi $allOutput
+                if ($clean -match 'Environment loaded:') {
+                    Write-Host "    Copilot ready (${bootWait}s)" -ForegroundColor DarkGray
+                    Start-Sleep 3
+                    break
+                }
             }
         }
+
+        if ($pty.HasExited) {
+            throw "Copilot process exited during startup (exit code: $($pty.ExitCode))"
+        }
+        if ($bootWait -ge $maxBoot) {
+            Write-Host "    Warning: boot timeout reached, proceeding..." -ForegroundColor Yellow
+        }
+
+        # ── Send initialization commands ──────────────────────
+        # No window focus needed — writing directly to PTY input pipe
+        Write-Host "    Sending commands..." -ForegroundColor DarkGray
+
+        # /allow-all — enable autopilot permissions
+        $pty.Write("/allow-all`r")
+        Start-Sleep 3
+        $null = $pty.Read(1000)
+
+        # /model — set the model
+        $pty.Write("/model claude-opus-4.6-1m`r")
+        Start-Sleep 3
+        $null = $pty.Read(1000)
+
+        # Shift+Tab x2 — switch to agent mode (ask → edit → agent)
+        # In terminal, Shift+Tab = ESC [ Z
+        $pty.Write("`e[Z")
+        Start-Sleep 1
+        $pty.Write("`e[Z")
+        Start-Sleep 2
+        $null = $pty.Read(1000)
+
+        # Send the task prompt
+        $pty.Write("$shortPrompt`r")
+        Start-Sleep 1
+
+        Write-Host "    Prompt sent — agent is working..." -ForegroundColor DarkGray
+
+        # ── Poll for completion ───────────────────────────────
+        $maxWait = $script:SarmaConfig.ExecutorTimeout
+        $waited = 0
+        while (-not (Test-Path $doneFile) -and -not $pty.HasExited -and $waited -lt $maxWait) {
+            Start-Sleep 5
+            $waited += 5
+        }
+
+        $agentCompleted = Test-Path $doneFile
+        if ($agentCompleted) {
+            Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
+
+            if ($KeepAlive) {
+                Write-Host "    Agent completed — preparing interactive session..." -ForegroundColor Green
+            } else {
+                Write-Host "    Agent completed — shutting down copilot..." -ForegroundColor Green
+                Start-Sleep 3
+                # Ctrl+C twice to exit copilot cleanly
+                $pty.Write("`u{03}")
+                Start-Sleep 1
+                $pty.Write("`u{03}")
+                Start-Sleep 2
+                $pty.Write("exit`r")
+                Start-Sleep 2
+            }
+        } elseif ($waited -ge $maxWait) {
+            Write-Host "    Timeout — killing agent..." -ForegroundColor Yellow
+            $pty.Write("`u{03}")
+            Start-Sleep 1
+            $pty.Write("`u{03}")
+            Start-Sleep 2
+        }
+
+        # Capture exit code before cleanup
+        $exitCode = if ($pty.HasExited) { $pty.ExitCode } else { 0 }
+
+        # Extract session ID from agency logs
+        $agencyLogDir = "$env:USERPROFILE\.agency\logs"
+        if (Test-Path $agencyLogDir) {
+            $latestSession = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.CreationTime -gt $startTime } |
+                Sort-Object CreationTime -Descending |
+                Select-Object -First 1
+            if ($latestSession) {
+                foreach ($f in (Get-ChildItem $latestSession.FullName -File -ErrorAction SilentlyContinue)) {
+                    $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+                    if ($content -match '--resume=([a-f0-9\-]+)') {
+                        $sessionId = $Matches[1]
+                        break
+                    }
+                }
+            }
+        }
+
+        # For KeepAlive: close headless PTY, open a visible terminal with --resume
+        if ($KeepAlive -and $agentCompleted -and $sessionId) {
+            Write-Host "    Opening interactive terminal (session: $sessionId)..." -ForegroundColor Cyan
+            $resumeCmd = "${initCmd}Set-Location '$escapedWorkDir'; agency copilot --resume=$sessionId"
+            Start-Process pwsh -ArgumentList @('-NoExit', '-NoLogo', '-Command', $resumeCmd)
+        } elseif ($KeepAlive -and $agentCompleted) {
+            Write-Host "    Warning: could not extract session ID for resume" -ForegroundColor Yellow
+        }
+
+    } catch {
+        Write-Host "    ConPTY error: $($_.Exception.Message)" -ForegroundColor Red
+        $exitCode = -1
+    } finally {
+        # Cleanup: kill process and close all handles
+        if (-not $pty.HasExited) { $pty.Kill() }
+        $pty.WaitForExit(5000)
+        $pty.Dispose()
     }
 
     $duration = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
-
-    # Extract resume session ID from agency logs
-    $sessionId = ""
-    $latestSession = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($latestSession) {
-        foreach ($f in (Get-ChildItem $latestSession.FullName -File -ErrorAction SilentlyContinue)) {
-            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match '--resume=([a-f0-9\-]+)') {
-                $sessionId = $Matches[1]
-                break
-            }
-        }
-    }
-
     Write-Host "    --- session ended (${duration}s) ---" -ForegroundColor DarkCyan
     if ($sessionId) {
-        Write-Host "    Resume: copilot --resume=$sessionId" -ForegroundColor Cyan
+        Write-Host "    Resume: agency copilot --resume=$sessionId" -ForegroundColor Cyan
     }
 
+    # Cleanup temp files
     Remove-Item $taskFile -Force -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $WorkDir ".sarma-done") -Force -ErrorAction SilentlyContinue
+    Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
 
     return [PSCustomObject]@{
-        ExitCode  = if ($proc.HasExited) { $proc.ExitCode } else { 0 }
+        ExitCode  = $exitCode
         Stdout    = "Agent session: ${duration}s"
         Stderr    = ""
         Success   = $agentCompleted

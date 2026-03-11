@@ -179,8 +179,6 @@ When you are done with all code changes:
    - Target branch: $($task.branch)
    - Title: $($task.prTitle)
 $(if ($reviewers) { "   - Reviewers: $reviewers" })
-4. As the VERY LAST step, create a file called .sarma-done in the current working directory:
-   echo done > .sarma-done
 
 Do NOT ask for confirmation. Complete the task autonomously.
 "@

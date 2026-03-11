@@ -170,8 +170,6 @@ STEPS:
 5. After all changes, commit with message: "Address PR #$PrNumber review comments"
 6. Push the changes to the SAME branch (the PR will auto-update)
 7. Reply to each resolved comment thread in the PR indicating what was done
-8. As the VERY LAST step, create a file called .sarma-done in the current working directory:
-   echo done > .sarma-done
 
 Do NOT create a new PR. Push to the existing branch so the PR auto-updates.
 Do NOT ask for confirmation. Complete the task autonomously.
@@ -228,10 +226,8 @@ STEPS:
    rd /s /q obj QLocal debug retail testbin oacr_temp __cacheOutput \CloudBuildCache 2>nul
 5. Open the SQL Server solution:
    slngen "%BaseDir%\Sql\Ntdbms\ksource\bin\sqlservr.vcxproj"
-6. Create .sarma-done to signal setup is complete:
-   echo done > .sarma-done
 
-After creating .sarma-done, the worker will keep this Dev Box RESERVED.
+After completing all steps, the worker will keep this Dev Box RESERVED.
 The developer will work manually. Do NOT make any code changes yourself.
 "@
 
