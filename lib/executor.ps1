@@ -108,17 +108,16 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         # No window focus needed — writing directly to PTY input pipe
         Write-Host "    Sending commands..." -ForegroundColor DarkGray
 
-        # PTY output log for debugging
+        # PTY output log for debugging (raw output goes to file, clean summaries to console)
         $ptyLogFile = Join-Path $taskDir "ptylog-$taskId.txt"
-        function Log-PtyOutput {
-            param([string]$Label)
-            $raw = $pty.Read(2000)
+        function Drain-Pty {
+            param([string]$Label, [int]$TimeoutMs = 2000)
+            $raw = $pty.Read($TimeoutMs)
             if ($raw) {
                 $clean = Strip-Ansi $raw
-                $entry = "[$Label] $(Get-Date -Format 'HH:mm:ss')`n$clean`n"
-                Add-Content -Path $ptyLogFile -Value $entry -Encoding UTF8
-                Write-Host "    [$Label] $(($clean -split "`n" | Select-Object -First 1).Trim())" -ForegroundColor DarkGray
+                Add-Content -Path $ptyLogFile -Value "[${Label}] $(Get-Date -Format 'HH:mm:ss')`n$clean`n---`n" -Encoding UTF8
             }
+            return $raw
         }
 
         # /allow-all — enable autopilot permissions
@@ -126,7 +125,6 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         Start-Sleep -Milliseconds 300
         $pty.Write("`r")
         # /allow-all triggers environment reload — wait for it to finish
-        Write-Host "    Waiting for /allow-all reload..." -ForegroundColor DarkGray
         $reloadOutput = ""
         $reloadWait = 0
         while ($reloadWait -lt 30) {
@@ -136,52 +134,50 @@ This signals the orchestrator that you are done. Do NOT skip this step.
                 $reloadOutput += $chunk
                 $clean = Strip-Ansi $reloadOutput
                 if ($clean -match 'All permissions.*enabled') {
-                    Write-Host "    /allow-all confirmed (${reloadWait}s)" -ForegroundColor DarkGray
                     Start-Sleep 2
                     break
                 }
             }
         }
-        Add-Content -Path $ptyLogFile -Value "[allow-all] $(Get-Date -Format 'HH:mm:ss')`n$(Strip-Ansi $reloadOutput)`n" -Encoding UTF8
+        Add-Content -Path $ptyLogFile -Value "[allow-all] $(Get-Date -Format 'HH:mm:ss')`n$(Strip-Ansi $reloadOutput)`n---`n" -Encoding UTF8
+        Write-Host "    ✓ /allow-all" -ForegroundColor DarkGray
 
         # /model — set the model (send AFTER reload settles)
         $pty.Write("/model claude-opus-4.6-1m")
         Start-Sleep -Milliseconds 300
         $pty.Write("`r")
         Start-Sleep 5
-        Log-PtyOutput "model"
+        $null = Drain-Pty "model"
+        Write-Host "    ✓ /model" -ForegroundColor DarkGray
 
         # Shift+Tab x2 — switch to agent mode (ask → plan → autopilot)
-        # In terminal, Shift+Tab = ESC [ Z
         $pty.Write("`e[Z")
         Start-Sleep 2
         $pty.Write("`e[Z")
         Start-Sleep 3
-        Log-PtyOutput "shift-tab"
+        $null = Drain-Pty "shift-tab"
+        Write-Host "    ✓ autopilot mode" -ForegroundColor DarkGray
 
         # Send the task prompt — text and Enter SEPARATELY
-        # (sending together causes TUI to treat \r as part of pasted text)
+        # Longer delay before Enter: TUI needs time to process pasted text
         $pty.Write($shortPrompt)
-        Start-Sleep -Milliseconds 500
+        Start-Sleep 2
         $pty.Write("`r")
-        Start-Sleep 3
+        Start-Sleep 5
 
         # Verify submission — check if copilot started working
-        $postSubmit = $pty.Read(5000)
+        $postSubmit = $pty.Read(8000)
         $postClean = Strip-Ansi $postSubmit
-        Add-Content -Path $ptyLogFile -Value "[prompt-response] $(Get-Date -Format 'HH:mm:ss')`n$postClean`n" -Encoding UTF8
+        Add-Content -Path $ptyLogFile -Value "[prompt-response] $(Get-Date -Format 'HH:mm:ss')`n$postClean`n---`n" -Encoding UTF8
 
-        if ($postClean -and ($postClean -match 'report_intent|view|powershell|grep|Reading|Exploring')) {
-            Write-Host "    Prompt submitted — agent is working..." -ForegroundColor DarkGray
+        if ($postClean -and ($postClean -match 'report_intent|view|powershell|grep|Reading|Exploring|Fetchi|cancel')) {
+            Write-Host "    ✓ prompt submitted — agent is working" -ForegroundColor DarkGray
         } else {
-            # Enter might not submit in autopilot mode — try Ctrl+S as fallback
-            Write-Host "    No activity detected — retrying submit..." -ForegroundColor Yellow
+            # Retry Enter
+            Write-Host "    ⟳ retrying submit..." -ForegroundColor Yellow
             $pty.Write("`r")
-            Start-Sleep 3
-            $retry = $pty.Read(5000)
-            $retryClean = Strip-Ansi $retry
-            Add-Content -Path $ptyLogFile -Value "[retry-submit] $(Get-Date -Format 'HH:mm:ss')`n$retryClean`n" -Encoding UTF8
-            Write-Host "    Prompt sent (retry) — agent is working..." -ForegroundColor DarkGray
+            Start-Sleep 5
+            $null = Drain-Pty "retry-submit"
         }
 
         Write-Host "    PTY log: $ptyLogFile" -ForegroundColor DarkGray
@@ -192,15 +188,21 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         while (-not (Test-Path $doneFile) -and -not $pty.HasExited -and $waited -lt $maxWait) {
             Start-Sleep 5
             $waited += 5
-            # Drain PTY output periodically (prevents pipe buffer from filling)
+            # Drain PTY output (prevents pipe buffer from filling + shows progress)
             $chunk = $pty.Read(500)
-            if ($chunk -and $waited % 30 -eq 0) {
+            if ($chunk) {
                 $clean = (Strip-Ansi $chunk).Trim()
-                if ($clean) {
-                    $preview = if ($clean.Length -gt 100) { $clean.Substring(0,100) + "..." } else { $clean }
-                    Write-Host "    [${waited}s] $preview" -ForegroundColor DarkGray
-                    Add-Content -Path $ptyLogFile -Value "[poll ${waited}s] $(Get-Date -Format 'HH:mm:ss')`n$clean`n" -Encoding UTF8
+                # Extract meaningful status lines (tool calls, not TUI noise)
+                $lines = $clean -split "`n" | Where-Object {
+                    $_ -match '^\s*[◎○∘●✓✗└►▸]' -or $_ -match 'cancel\)' -or $_ -match 'Esc to'
+                } | ForEach-Object { $_.Trim() } | Select-Object -First 2
+                foreach ($line in $lines) {
+                    if ($line.Length -gt 2) {
+                        $short = if ($line.Length -gt 90) { $line.Substring(0,90) + "…" } else { $line }
+                        Write-Host "    $short" -ForegroundColor DarkGray
+                    }
                 }
+                Add-Content -Path $ptyLogFile -Value "[poll ${waited}s]`n$clean`n---`n" -Encoding UTF8
             }
         }
 
