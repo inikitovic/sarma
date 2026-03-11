@@ -93,7 +93,13 @@ function Invoke-CopilotAgent {
     $wshell.SendKeys("{ENTER}")
     Start-Sleep 2
 
-    # 2. Switch to autopilot mode (two Shift+Tabs)
+    # 2. Set model to opus 1M context
+    $wshell.SendKeys("/model claude-opus-4.6-1m")
+    Start-Sleep 1
+    $wshell.SendKeys("{ENTER}")
+    Start-Sleep 2
+
+    # 3. Switch to autopilot mode (two Shift+Tabs)
     $wshell.SendKeys("+{TAB}")
     Start-Sleep 1
     $wshell.SendKeys("+{TAB}")
