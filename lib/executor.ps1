@@ -99,15 +99,16 @@ function Invoke-CopilotAgent {
     $proc = Start-Process pwsh -ArgumentList $procArgs -PassThru
 
     # Wait for copilot to fully load
-    Write-Host "    Waiting for copilot to load..." -ForegroundColor DarkGray
+    Write-Host "    Waiting for copilot to load (init.ps1 + MCP servers)..." -ForegroundColor DarkGray
     $agencyLogDir = "$env:USERPROFILE\.agency\logs"
-    $preSessionCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
+    $launchTime = Get-Date
     $bootWait = 0
-    while ($bootWait -lt 90) {
+    while ($bootWait -lt 120) {
         Start-Sleep 3
         $bootWait += 3
-        $currentCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
-        if ($currentCount -gt $preSessionCount) {
+        # Look for a session directory created AFTER we launched
+        $newSession = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -gt $launchTime } | Select-Object -First 1
+        if ($newSession) {
             Write-Host "    Session detected - waiting for MCP servers..." -ForegroundColor DarkGray
             Start-Sleep 30
             break
