@@ -42,36 +42,49 @@ function Invoke-CopilotAgent {
     Write-Host "    ─── launching agency copilot ───" -ForegroundColor DarkCyan
     $startTime = Get-Date
 
-    # Launch interactive agency copilot in a new window (no Tee — breaks interactive terminal)
+    # Launch interactive agency copilot in a new window
     $escapedWorkDir = $WorkDir -replace "'", "''"
     $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', `
         "Set-Location '$escapedWorkDir'; agency copilot" `
         -PassThru
 
-    # Wait for copilot to fully load (MCP servers, etc.)
+    # Wait for copilot to fully load (MCP servers + browser auth)
     # Poll the agency log directory for a new session to confirm it's ready
-    Write-Host "    Waiting for copilot to load…" -ForegroundColor DarkGray
+    Write-Host "    Waiting for copilot to load (may open browser for auth)…" -ForegroundColor DarkGray
     $agencyLogDir = "$env:USERPROFILE\.agency\logs"
     $preSessionCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
     $bootWait = 0
-    $maxBootWait = 60
+    $maxBootWait = 90
     while ($bootWait -lt $maxBootWait) {
         Start-Sleep 3
         $bootWait += 3
         $currentCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
         if ($currentCount -gt $preSessionCount) {
-            # New session appeared — copilot is loading
-            Start-Sleep 10  # give it extra time to finish loading MCP servers
+            # New session appeared — copilot is loading MCP servers + finishing auth
+            Write-Host "    Session detected — waiting for auth + MCP servers…" -ForegroundColor DarkGray
+            Start-Sleep 15
             break
         }
     }
-    Write-Host "    Copilot loaded (${bootWait}s)" -ForegroundColor DarkGray
+
+    # Refocus the copilot window (browser auth may have stolen focus)
+    Write-Host "    Copilot ready (${bootWait}s) — refocusing terminal…" -ForegroundColor DarkGray
+    Start-Sleep 2
 
     # Automate the interactive session
     $wshell = New-Object -ComObject WScript.Shell
 
-    # Activate the window
-    $wshell.AppActivate($proc.Id) | Out-Null
+    # Activate the copilot window (retry — browser auth may have stolen focus)
+    $activated = $false
+    for ($retry = 0; $retry -lt 5; $retry++) {
+        $activated = $wshell.AppActivate($proc.Id)
+        if ($activated) { break }
+        Write-Host "    Retrying window focus ($($retry+1)/5)…" -ForegroundColor DarkGray
+        Start-Sleep 2
+    }
+    if (-not $activated) {
+        Write-Host "    WARNING: Could not focus copilot window — SendKeys may fail" -ForegroundColor Yellow
+    }
     Start-Sleep 1
 
     # 1. Allow all tools
