@@ -42,6 +42,12 @@ function Invoke-CopilotAgent {
     Write-Host "    ─── launching agency copilot ───" -ForegroundColor DarkCyan
     $startTime = Get-Date
 
+    # Pre-authenticate: warm up Azure tokens to avoid browser popups mid-task
+    Write-Host "    Pre-authenticating Azure tokens…" -ForegroundColor DarkGray
+    $null = az account get-access-token --resource "https://management.azure.com" 2>&1
+    $null = az account get-access-token --resource "https://storage.azure.com" 2>&1
+    $null = az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" 2>&1  # Azure DevOps
+
     # Launch interactive agency copilot in a new window
     $escapedWorkDir = $WorkDir -replace "'", "''"
     $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', `
