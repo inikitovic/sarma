@@ -141,16 +141,26 @@ function Invoke-CopilotAgent {
 
     if (Test-Path $doneFile) {
         $agentCompleted = $true
-        Write-Host "    Agent completed - waiting for copilot to settle..." -ForegroundColor Green
+        Write-Host "    Agent completed - shutting down copilot..." -ForegroundColor Green
         Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
-        # Wait for copilot to finish any remaining output after creating .sarma-done
         Start-Sleep 10
-        Send-ToAgent -Process $proc -Keys "^c" -PostDelay 3
-        Send-ToAgent -Process $proc -Keys "^c" -PostDelay 5
+        # Rapid-fire Ctrl+C twice then exit
+        $null = Focus-AgentWindow -Process $proc
+        $wshell = New-Object -ComObject WScript.Shell
+        $wshell.SendKeys("^c")
+        Start-Sleep -Milliseconds 500
+        $wshell.SendKeys("^c")
+        Start-Sleep 3
+        Send-ToAgent -Process $proc -Keys "exit" -PostDelay 1
+        Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
     } elseif ($waited -ge $maxWait) {
         Write-Host "    Timeout - killing agent session..." -ForegroundColor Yellow
-        Send-ToAgent -Process $proc -Keys "^c" -PostDelay 2
-        Send-ToAgent -Process $proc -Keys "^c" -PostDelay 3
+        $null = Focus-AgentWindow -Process $proc
+        $wshell = New-Object -ComObject WScript.Shell
+        $wshell.SendKeys("^c")
+        Start-Sleep -Milliseconds 500
+        $wshell.SendKeys("^c")
+        Start-Sleep 3
     }
 
     # Wait for exit
