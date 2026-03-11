@@ -116,6 +116,7 @@ function Invoke-CopilotAgent {
     $doneFile = Join-Path $WorkDir ".sarma-done"
     $pollInterval = 5
     $maxWait = $script:SarmaConfig.ExecutorTimeout
+    $agentCompleted = $false
 
     Write-Host "    Waiting for agent to complete (polling .sarma-done)…" -ForegroundColor DarkGray
     $waited = 0
@@ -125,7 +126,8 @@ function Invoke-CopilotAgent {
     }
 
     if (Test-Path $doneFile) {
-        Write-Host "    Agent signaled completion — shutting down session…" -ForegroundColor Green
+        $agentCompleted = $true
+        Write-Host "    ✓ Agent signaled completion — shutting down session…" -ForegroundColor Green
         Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
 
         # Send Ctrl+C twice to gracefully exit copilot (captures resume ID)
@@ -188,7 +190,7 @@ function Invoke-CopilotAgent {
         ExitCode  = $exitCode
         Stdout    = "Agent session: ${duration}s"
         Stderr    = ""
-        Success   = ($exitCode -eq 0 -or $exitCode -eq $null)
+        Success   = $agentCompleted  # .sarma-done found = success, regardless of exit code
         SessionId = $sessionId
     }
 }
