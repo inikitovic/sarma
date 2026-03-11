@@ -75,10 +75,48 @@ function Invoke-CopilotAgent {
     $wshell.SendKeys("{ENTER}")
 
     Write-Host "    Prompt sent — agent is working…" -ForegroundColor DarkGray
-    Write-Host "    (You can watch the agent window. Don't switch focus during SendKeys.)" -ForegroundColor DarkGray
 
-    # Wait for the process to exit
-    $proc.WaitForExit()
+    # Poll for .sarma-done file — agent creates it when finished
+    $doneFile = Join-Path $WorkDir ".sarma-done"
+    $pollInterval = 5
+    $maxWait = $script:SarmaConfig.ExecutorTimeout
+
+    Write-Host "    Waiting for agent to complete (polling .sarma-done)…" -ForegroundColor DarkGray
+    $waited = 0
+    while (-not (Test-Path $doneFile) -and -not $proc.HasExited -and $waited -lt $maxWait) {
+        Start-Sleep $pollInterval
+        $waited += $pollInterval
+    }
+
+    if (Test-Path $doneFile) {
+        Write-Host "    Agent signaled completion — shutting down session…" -ForegroundColor Green
+        Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
+
+        # Send Ctrl+C twice to gracefully exit copilot (captures resume ID)
+        Start-Sleep 2
+        $wshell.AppActivate($proc.Id) | Out-Null
+        Start-Sleep 1
+        $wshell.SendKeys("^c")
+        Start-Sleep 2
+        $wshell.SendKeys("^c")
+        Start-Sleep 3
+    } elseif ($waited -ge $maxWait) {
+        Write-Host "    Timeout — killing agent session…" -ForegroundColor Yellow
+        $wshell.AppActivate($proc.Id) | Out-Null
+        Start-Sleep 1
+        $wshell.SendKeys("^c")
+        Start-Sleep 2
+        $wshell.SendKeys("^c")
+        Start-Sleep 3
+    }
+
+    # Wait for process to fully exit
+    if (-not $proc.HasExited) {
+        $proc.WaitForExit(10000) | Out-Null
+        if (-not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     $endTime = Get-Date
     $duration = [Math]::Round(($endTime - $startTime).TotalSeconds, 1)
@@ -101,6 +139,7 @@ function Invoke-CopilotAgent {
 
     # Cleanup task file (keep log for debugging)
     Remove-Item $taskFile -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $WorkDir ".sarma-done") -Force -ErrorAction SilentlyContinue
 
     return [PSCustomObject]@{
         ExitCode  = $exitCode
