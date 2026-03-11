@@ -48,10 +48,11 @@ function Invoke-CopilotAgent {
     $null = az account get-access-token --resource "https://storage.azure.com" 2>&1
     $null = az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" 2>&1  # Azure DevOps
 
-    # Launch interactive agency copilot in a new window
+    # Launch interactive agency copilot in a new window with unique title
     $escapedWorkDir = $WorkDir -replace "'", "''"
+    $windowTitle = "Sarma-Agent-$([guid]::NewGuid().ToString().Substring(0,8))"
     $proc = Start-Process pwsh -ArgumentList '-NoExit', '-Command', `
-        "Set-Location '$escapedWorkDir'; agency copilot" `
+        "`$Host.UI.RawUI.WindowTitle = '$windowTitle'; Set-Location '$escapedWorkDir'; agency copilot" `
         -PassThru
 
     # Wait for copilot to fully load (MCP servers + browser auth)
@@ -83,7 +84,7 @@ function Invoke-CopilotAgent {
     # Activate the copilot window (retry — browser auth may have stolen focus)
     $activated = $false
     for ($retry = 0; $retry -lt 5; $retry++) {
-        $activated = $wshell.AppActivate($proc.Id)
+        $activated = $wshell.AppActivate($windowTitle)
         if ($activated) { break }
         Write-Host "    Retrying window focus ($($retry+1)/5)…" -ForegroundColor DarkGray
         Start-Sleep 2
@@ -138,7 +139,7 @@ function Invoke-CopilotAgent {
 
         # Send Ctrl+C twice to gracefully exit copilot (captures resume ID)
         Start-Sleep 2
-        $wshell.AppActivate($proc.Id) | Out-Null
+        $wshell.AppActivate($windowTitle) | Out-Null
         Start-Sleep 1
         $wshell.SendKeys("^c")
         Start-Sleep 2
@@ -146,7 +147,7 @@ function Invoke-CopilotAgent {
         Start-Sleep 3
     } elseif ($waited -ge $maxWait) {
         Write-Host "    Timeout — killing agent session…" -ForegroundColor Yellow
-        $wshell.AppActivate($proc.Id) | Out-Null
+        $wshell.AppActivate($windowTitle) | Out-Null
         Start-Sleep 1
         $wshell.SendKeys("^c")
         Start-Sleep 2
@@ -200,3 +201,4 @@ function Invoke-CopilotAgent {
         SessionId = $sessionId
     }
 }
+
