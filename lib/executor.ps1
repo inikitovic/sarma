@@ -98,19 +98,31 @@ function Invoke-CopilotAgent {
 
     $proc = Start-Process pwsh -ArgumentList $procArgs -PassThru
 
-    # Wait for copilot to fully load
-    Write-Host "    Waiting for copilot to load (init.ps1 + MCP servers)..." -ForegroundColor DarkGray
+    # Wait for copilot to fully load — poll agency logs for readiness
+    Write-Host "    Waiting for copilot to load..." -ForegroundColor DarkGray
     $agencyLogDir = "$env:USERPROFILE\.agency\logs"
     $launchTime = Get-Date
     $bootWait = 0
-    while ($bootWait -lt 120) {
+    $sessionDir = $null
+    while ($bootWait -lt 300) {
         Start-Sleep 3
         $bootWait += 3
         # Look for a session directory created AFTER we launched
-        $newSession = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -gt $launchTime } | Select-Object -First 1
-        if ($newSession) {
-            Write-Host "    Session detected - waiting for MCP servers..." -ForegroundColor DarkGray
-            Start-Sleep 30
+        $sessionDir = Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -gt $launchTime } | Select-Object -First 1
+        if (-not $sessionDir) { continue }
+
+        # Check session logs for "Loaded X MCP server(s)" — means copilot is ready
+        $ready = $false
+        foreach ($f in (Get-ChildItem $sessionDir.FullName -File -ErrorAction SilentlyContinue)) {
+            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            if ($content -match 'Loaded \d+ MCP server') {
+                $ready = $true
+                break
+            }
+        }
+        if ($ready) {
+            Write-Host "    Copilot ready (${bootWait}s)" -ForegroundColor DarkGray
+            Start-Sleep 3  # small buffer for UI to render
             break
         }
     }
