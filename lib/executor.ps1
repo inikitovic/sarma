@@ -105,6 +105,10 @@ function Invoke-CopilotAgent {
     # Send commands — each call re-focuses the window via Win32 API
     Write-Host "    Sending commands..." -ForegroundColor DarkGray
 
+    # 0. Ensure input field is active (send a no-op keystroke + delete)
+    Send-ToAgent -Process $proc -Keys " " -PostDelay 1
+    Send-ToAgent -Process $proc -Keys "{BACKSPACE}" -PostDelay 2
+
     # 1. Allow all tools first (prevents permissions dialog later)
     Send-ToAgent -Process $proc -Keys "/allow-all" -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
