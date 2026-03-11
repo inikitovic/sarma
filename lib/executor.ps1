@@ -96,7 +96,7 @@ function Invoke-CopilotAgent {
         $currentCount = (Get-ChildItem $agencyLogDir -Directory -ErrorAction SilentlyContinue).Count
         if ($currentCount -gt $preSessionCount) {
             Write-Host "    Session detected - waiting for MCP servers..." -ForegroundColor DarkGray
-            Start-Sleep 15
+            Start-Sleep 30
             break
         }
     }
