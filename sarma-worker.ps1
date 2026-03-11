@@ -4,7 +4,7 @@
 .EXAMPLE
     .\sarma-worker.ps1
     .\sarma-worker.ps1 --types backend,test
-    .\sarma-worker.ps1 --live
+    .\sarma-worker.ps1 --verbose
 #>
 
 # Load all library modules
@@ -19,27 +19,55 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # ── Parse args ───────────────────────────────────────────────────
 
 $taskTypes = $script:SarmaConfig.WorkerTaskTypes
+$script:Verbose = $false
 
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
-        "--types" { $i++; $taskTypes = $args[$i] -split "," }
+        "--types"   { $i++; $taskTypes = $args[$i] -split "," }
+        "--verbose" { $script:Verbose = $true }
+        "-v"        { $script:Verbose = $true }
     }
 }
 
 $workerId = $script:SarmaConfig.WorkerId
 
+# ── Logging helpers ──────────────────────────────────────────────
+
+function Log-Info {
+    param([string]$Message, [string]$Color = "White")
+    $ts = Get-Date -Format "HH:mm:ss"
+    Write-Host "[$ts] $Message" -ForegroundColor $Color
+}
+
+function Log-Verbose {
+    param([string]$Message)
+    if ($script:Verbose) {
+        $ts = Get-Date -Format "HH:mm:ss"
+        Write-Host "[$ts] [DBG] $Message" -ForegroundColor DarkGray
+    }
+}
+
+function Log-Step {
+    param([string]$Step, [string]$Message, [string]$Color = "DarkGray")
+    $ts = Get-Date -Format "HH:mm:ss"
+    Write-Host "[$ts]   $Step $Message" -ForegroundColor $Color
+}
+
 # ── Worker Registration ─────────────────────────────────────────
 
 function Register-Worker {
+    Log-Verbose "Registering worker '$workerId' in sarmaworkers table…"
     Set-SarmaTableEntity -TableName "sarmaworkers" -PartitionKey "worker" -RowKey $workerId -Properties @{
         lastSeen      = [datetime]::UtcNow.ToString("o")
         taskTypes     = ($taskTypes -join ",")
         currentTaskId = ""
     }
+    Log-Verbose "Worker registered."
 }
 
 function Update-Heartbeat {
     param([string]$CurrentTaskId = "")
+    Log-Verbose "Heartbeat sent (task: $(if ($CurrentTaskId) { $CurrentTaskId.Substring(0,8) } else { 'none' }))"
     Set-SarmaTableEntity -TableName "sarmaworkers" -PartitionKey "worker" -RowKey $workerId -Properties @{
         lastSeen      = [datetime]::UtcNow.ToString("o")
         taskTypes     = ($taskTypes -join ",")
@@ -48,6 +76,7 @@ function Update-Heartbeat {
 }
 
 function Unregister-Worker {
+    Log-Verbose "Unregistering worker…"
     try { Remove-SarmaTableEntity -TableName "sarmaworkers" -PartitionKey "worker" -RowKey $workerId } catch {}
 }
 
@@ -59,6 +88,7 @@ function Update-TaskStatus {
         [string]$Status,
         [hashtable]$ExtraFields = @{}
     )
+    Log-Verbose "Updating task $($TaskId.Substring(0,8)) → status=$Status $(if ($ExtraFields.Count) { $ExtraFields.Keys -join ',' })"
     $props = @{ status = $Status } + $ExtraFields
     Set-SarmaTableEntity -TableName "sarmatasks" -PartitionKey "task" -RowKey $TaskId -Properties $props
 }
@@ -66,17 +96,22 @@ function Update-TaskStatus {
 function Process-Task {
     param($TaskId)
 
+    Log-Verbose "Fetching task $TaskId from blob storage…"
     $task = Get-SarmaTableEntity -TableName "sarmatasks" -PartitionKey "task" -RowKey $TaskId
     if (-not $task) {
-        Write-Host "  Task $TaskId not found in table, skipping" -ForegroundColor Yellow
+        Log-Info "Task $TaskId not found in storage, skipping" Yellow
         return
     }
 
     Write-Host ""
-    Write-Host "═══ Task $($TaskId.Substring(0,8)) [$($task.taskType)] ═══" -ForegroundColor Cyan
-    Write-Host "  Prompt: $($task.prompt.Substring(0, [Math]::Min(120, $task.prompt.Length)))" -ForegroundColor White
-    Write-Host "  Repo:   $($task.repo)" -ForegroundColor DarkGray
-    Write-Host "  Branch: $($task.branch) → $($task.resultBranch)" -ForegroundColor DarkGray
+    Log-Info "═══ Task $($TaskId.Substring(0,8)) [$($task.taskType)] ═══" Cyan
+    Log-Info "  Prompt: $($task.prompt.Substring(0, [Math]::Min(120, $task.prompt.Length)))" White
+    Log-Verbose "  Repo:       $($task.repo)"
+    Log-Verbose "  Branch:     $($task.branch) → $($task.resultBranch)"
+    Log-Verbose "  Commit msg: $($task.commitMessage)"
+    Log-Verbose "  PR title:   $($task.prTitle)"
+    Log-Verbose "  Reviewers:  $(if ($task.reviewers) { $task.reviewers } else { '(none)' })"
+    Log-Verbose "  Work item:  $(if ($task.workItemId) { '#' + $task.workItemId } else { '(none)' })"
 
     Update-TaskStatus -TaskId $TaskId -Status "running" -ExtraFields @{
         workerId  = $workerId
@@ -87,18 +122,19 @@ function Process-Task {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
-        # 1. Get repo
-        Write-Host "  [1/3] Initializing repo…" -ForegroundColor DarkGray
+        # 1. Initialize repo (use local if available, otherwise clone)
+        Log-Step "[1/3]" "Initializing repo…"
+        Log-Verbose "  Local repo config: '$($script:SarmaConfig.LocalRepo)'"
         $repoPath = Initialize-Repo -RepoUrl $task.repo
-        Write-Host "  [1/3] ✓ Repo ready" -ForegroundColor Green
+        Log-Step "[1/3]" "✓ Repo ready at $repoPath" Green
 
-        # 2. Create worktree
-        Write-Host "  [2/3] Creating worktree $($task.resultBranch)…" -ForegroundColor DarkGray
+        # 2. Create task branch and checkout
+        Log-Step "[2/3]" "Creating branch $($task.resultBranch)…"
+        Log-Verbose "  Base branch: $($task.branch)"
         $wtPath = New-Worktree -RepoPath $repoPath -BranchName $task.resultBranch -BaseBranch $task.branch
-        Write-Host "  [2/3] ✓ Worktree at $wtPath" -ForegroundColor Green
+        Log-Step "[2/3]" "✓ Checked out $($task.resultBranch) at $wtPath" Green
 
         # 3. Craft prompt and launch agent
-        #    The agent handles everything: code changes, commit, push, and PR
         $reviewers = if ($task.reviewers) { $task.reviewers } else { "" }
         $adoOrg = if ($task.adoOrg) { $task.adoOrg } else { $script:SarmaConfig.AdoOrg }
         $adoProject = if ($task.adoProject) { $task.adoProject } else { $script:SarmaConfig.AdoProject }
@@ -127,10 +163,17 @@ $(if ($reviewers) { "   - Reviewers: $reviewers" })
 Do NOT ask for confirmation. Complete the task autonomously.
 "@
 
-        Write-Host "  [3/3] Launching agent…" -ForegroundColor DarkGray
+        Log-Step "[3/3]" "Launching agent (interactive SendKeys)…"
+        Log-Verbose "  Working dir: $wtPath"
+        Log-Verbose "  Prompt length: $($fullPrompt.Length) chars"
+        Log-Verbose "  ADO target: $adoOrg / $adoProject / $repoName"
+
         $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath
+
         $icon = if ($result.Success) { "✓" } else { "✗" }
-        Write-Host "  [3/3] $icon Agent finished (rc=$($result.ExitCode))" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+        Log-Step "[3/3]" "$icon Agent finished (rc=$($result.ExitCode))" $(if ($result.Success) { "Green" } else { "Red" })
+        Log-Verbose "  Duration: $($result.Stdout)"
+        Log-Verbose "  Session ID: $(if ($result.SessionId) { $result.SessionId } else { '(not captured)' })"
 
         # Store session ID for resume capability
         $sessionFields = @{
@@ -148,12 +191,14 @@ Do NOT ask for confirmation. Complete the task autonomously.
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
         $sessionFields.status = "completed"
         Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields $sessionFields
-        Write-Host "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" -ForegroundColor Green
+        Log-Info "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" Green
 
     } catch {
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
         $errMsg = $_.Exception.Message
         if ($errMsg.Length -gt 500) { $errMsg = $errMsg.Substring(0, 500) }
+        Log-Verbose "  Exception: $($_.Exception.GetType().Name)"
+        Log-Verbose "  Stack: $($_.ScriptStackTrace)"
         $failFields = @{
             completedAt = [datetime]::UtcNow.ToString("o")
             error       = $errMsg
@@ -162,7 +207,7 @@ Do NOT ask for confirmation. Complete the task autonomously.
             $failFields.sessionId = $result.SessionId
         }
         Update-TaskStatus -TaskId $TaskId -Status "failed" -ExtraFields $failFields
-        Write-Host "═══ Task $($TaskId.Substring(0,8)) FAILED after ${elapsed}s: $errMsg ═══" -ForegroundColor Red
+        Log-Info "═══ Task $($TaskId.Substring(0,8)) FAILED after ${elapsed}s: $errMsg ═══" Red
     }
 
     Update-Heartbeat
@@ -170,10 +215,14 @@ Do NOT ask for confirmation. Complete the task autonomously.
 
 # ── Main Loop ────────────────────────────────────────────────────
 
-Write-Host "Sarma Worker starting…" -ForegroundColor Cyan
-Write-Host "  Worker ID: $workerId"
-Write-Host "  Task types: $($taskTypes -join ', ')"
-Write-Host "  Live mode: $liveMode"
+Write-Host ""
+Log-Info "Sarma Worker starting…" Cyan
+Log-Info "  Worker ID:  $workerId"
+Log-Info "  Task types: $($taskTypes -join ', ')"
+Log-Info "  Verbose:    $($script:Verbose)"
+Log-Info "  Storage:    $($script:SarmaConfig.StorageAccount)"
+Log-Info "  Local repo: $(if ($script:SarmaConfig.LocalRepo) { $script:SarmaConfig.LocalRepo } else { '(none — will clone)' })"
+Log-Info "  Default branch: $($script:SarmaConfig.DefaultBranch)"
 Write-Host ""
 
 Register-Worker
@@ -185,19 +234,22 @@ $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
 }
 
 try {
-    Write-Host "Polling for tasks…" -ForegroundColor DarkGray
+    Log-Info "Polling for tasks…" DarkGray
     while ($running) {
         Update-Heartbeat
 
+        Log-Verbose "Polling queues: $($taskTypes -join ', ')…"
         $task = Receive-SarmaTask -TaskTypes $taskTypes
         if ($task) {
-            Write-Host "Received task: $($task.RowKey.Substring(0,8))…" -ForegroundColor Yellow
+            Log-Info "Received task: $($task.RowKey.Substring(0,8))… (type: $($task.taskType))" Yellow
             Process-Task -TaskId $task.RowKey
+            Log-Info "Ready for next task." DarkGray
         } else {
+            Log-Verbose "No tasks — sleeping 3s…"
             Start-Sleep -Seconds 3
         }
     }
 } finally {
     Unregister-Worker
-    Write-Host "Worker $workerId shut down." -ForegroundColor Yellow
+    Log-Info "Worker $workerId shut down." Yellow
 }
