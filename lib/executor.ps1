@@ -122,29 +122,68 @@ This signals the orchestrator that you are done. Do NOT skip this step.
         }
 
         # /allow-all — enable autopilot permissions
-        $pty.Write("/allow-all`r")
-        Start-Sleep 3
-        Log-PtyOutput "allow-all"
+        $pty.Write("/allow-all")
+        Start-Sleep -Milliseconds 300
+        $pty.Write("`r")
+        # /allow-all triggers environment reload — wait for it to finish
+        Write-Host "    Waiting for /allow-all reload..." -ForegroundColor DarkGray
+        $reloadOutput = ""
+        $reloadWait = 0
+        while ($reloadWait -lt 30) {
+            $chunk = $pty.Read(2000)
+            $reloadWait += 2
+            if ($chunk) {
+                $reloadOutput += $chunk
+                $clean = Strip-Ansi $reloadOutput
+                if ($clean -match 'All permissions.*enabled') {
+                    Write-Host "    /allow-all confirmed (${reloadWait}s)" -ForegroundColor DarkGray
+                    Start-Sleep 2
+                    break
+                }
+            }
+        }
+        Add-Content -Path $ptyLogFile -Value "[allow-all] $(Get-Date -Format 'HH:mm:ss')`n$(Strip-Ansi $reloadOutput)`n" -Encoding UTF8
 
-        # /model — set the model
-        $pty.Write("/model claude-opus-4.6-1m`r")
-        Start-Sleep 3
+        # /model — set the model (send AFTER reload settles)
+        $pty.Write("/model claude-opus-4.6-1m")
+        Start-Sleep -Milliseconds 300
+        $pty.Write("`r")
+        Start-Sleep 5
         Log-PtyOutput "model"
 
-        # Shift+Tab x2 — switch to agent mode (ask → edit → agent)
+        # Shift+Tab x2 — switch to agent mode (ask → plan → autopilot)
         # In terminal, Shift+Tab = ESC [ Z
         $pty.Write("`e[Z")
-        Start-Sleep 1
-        $pty.Write("`e[Z")
         Start-Sleep 2
+        $pty.Write("`e[Z")
+        Start-Sleep 3
         Log-PtyOutput "shift-tab"
 
-        # Send the task prompt
-        $pty.Write("$shortPrompt`r")
-        Start-Sleep 1
-        Log-PtyOutput "prompt"
+        # Send the task prompt — text and Enter SEPARATELY
+        # (sending together causes TUI to treat \r as part of pasted text)
+        $pty.Write($shortPrompt)
+        Start-Sleep -Milliseconds 500
+        $pty.Write("`r")
+        Start-Sleep 3
 
-        Write-Host "    Prompt sent — agent is working..." -ForegroundColor DarkGray
+        # Verify submission — check if copilot started working
+        $postSubmit = $pty.Read(5000)
+        $postClean = Strip-Ansi $postSubmit
+        Add-Content -Path $ptyLogFile -Value "[prompt-response] $(Get-Date -Format 'HH:mm:ss')`n$postClean`n" -Encoding UTF8
+
+        if ($postClean -and ($postClean -match 'report_intent|view|powershell|grep|Reading|Exploring')) {
+            Write-Host "    Prompt submitted — agent is working..." -ForegroundColor DarkGray
+        } else {
+            # Enter might not submit in autopilot mode — try Ctrl+S as fallback
+            Write-Host "    No activity detected — retrying submit..." -ForegroundColor Yellow
+            $pty.Write("`r")
+            Start-Sleep 3
+            $retry = $pty.Read(5000)
+            $retryClean = Strip-Ansi $retry
+            Add-Content -Path $ptyLogFile -Value "[retry-submit] $(Get-Date -Format 'HH:mm:ss')`n$retryClean`n" -Encoding UTF8
+            Write-Host "    Prompt sent (retry) — agent is working..." -ForegroundColor DarkGray
+        }
+
         Write-Host "    PTY log: $ptyLogFile" -ForegroundColor DarkGray
 
         # ── Poll for completion ───────────────────────────────
