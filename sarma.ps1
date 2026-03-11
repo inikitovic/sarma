@@ -41,6 +41,10 @@ function Show-Task {
     Write-Host "Done:    $(if ($Task.completedAt) { $Task.completedAt } else { '—' })"
     if ($Task.error) { Write-Host "Error:   $($Task.error)" -ForegroundColor Red }
     if ($Task.workItemId) { Write-Host "Work Item: #$($Task.workItemId)" }
+    if ($Task.sessionId) {
+        Write-Host "Session: $($Task.sessionId)" -ForegroundColor Cyan
+        Write-Host "Resume:  copilot --resume=$($Task.sessionId)" -ForegroundColor DarkGray
+    }
     Write-Host ""
     Write-Host "Prompt:"
     Write-Host "  $($Task.prompt)" -ForegroundColor Cyan

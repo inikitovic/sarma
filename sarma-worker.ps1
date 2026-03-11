@@ -125,10 +125,18 @@ $(if ($reviewers) { "   - Reviewers: $reviewers" })
 Do NOT ask for confirmation. Complete the task autonomously.
 "@
 
-        Write-Host "  [3/3] Launching agent in new window…" -ForegroundColor DarkGray
+        Write-Host "  [3/3] Launching agent…" -ForegroundColor DarkGray
         $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath
         $icon = if ($result.Success) { "✓" } else { "✗" }
         Write-Host "  [3/3] $icon Agent finished (rc=$($result.ExitCode))" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+
+        # Store session ID for resume capability
+        $sessionFields = @{
+            completedAt = [datetime]::UtcNow.ToString("o")
+        }
+        if ($result.SessionId) {
+            $sessionFields.sessionId = $result.SessionId
+        }
 
         if (-not $result.Success) {
             throw "Agent failed (rc=$($result.ExitCode)): $($result.Stderr)"
@@ -136,19 +144,22 @@ Do NOT ask for confirmation. Complete the task autonomously.
 
         # Done — agent handled commit + push + PR
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
-        Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields @{
-            completedAt = [datetime]::UtcNow.ToString("o")
-        }
+        $sessionFields.status = "completed"
+        Update-TaskStatus -TaskId $TaskId -Status "completed" -ExtraFields $sessionFields
         Write-Host "═══ Task $($TaskId.Substring(0,8)) COMPLETED in ${elapsed}s ═══" -ForegroundColor Green
 
     } catch {
         $elapsed = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
         $errMsg = $_.Exception.Message
         if ($errMsg.Length -gt 500) { $errMsg = $errMsg.Substring(0, 500) }
-        Update-TaskStatus -TaskId $TaskId -Status "failed" -ExtraFields @{
+        $failFields = @{
             completedAt = [datetime]::UtcNow.ToString("o")
             error       = $errMsg
         }
+        if ($result -and $result.SessionId) {
+            $failFields.sessionId = $result.SessionId
+        }
+        Update-TaskStatus -TaskId $TaskId -Status "failed" -ExtraFields $failFields
         Write-Host "═══ Task $($TaskId.Substring(0,8)) FAILED after ${elapsed}s: $errMsg ═══" -ForegroundColor Red
     }
 
