@@ -105,15 +105,18 @@ function Invoke-CopilotAgent {
     # Send commands — each call re-focuses the window via Win32 API
     Write-Host "    Sending commands..." -ForegroundColor DarkGray
 
-    Send-ToAgent -Process $proc -Keys "/allow-all" -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 2
-
+    # 1. Set model
     Send-ToAgent -Process $proc -Keys "/model claude-opus-4.6-1m" -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 2
 
+    # 2. Switch to autopilot mode (two Shift+Tabs)
     Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 1
-    Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 1
+    Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 2
 
+    # 3. Permissions dialog appears — option 1 (Enable all) is pre-selected, just Enter
+    Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 2
+
+    # 4. Type prompt and submit
     Send-ToAgent -Process $proc -Keys $safePrompt -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 1
 
