@@ -26,6 +26,22 @@ function Invoke-Git {
     }
 }
 
+function Ensure-SarmaExclude {
+    <#
+    .SYNOPSIS
+        Add .sarma* to .git/info/exclude so sarma files are never staged.
+    #>
+    param([Parameter(Mandatory)][string]$RepoPath)
+
+    $excludeFile = Join-Path $RepoPath ".git" "info" "exclude"
+    if (Test-Path $excludeFile) {
+        $content = Get-Content $excludeFile -Raw -ErrorAction SilentlyContinue
+        if ($content -notmatch '\.sarma') {
+            Add-Content $excludeFile "`n# Sarma Launcher temp files`n.sarma*"
+        }
+    }
+}
+
 function Initialize-Repo {
     <#
     .SYNOPSIS
@@ -39,6 +55,7 @@ function Initialize-Repo {
     if ($localPath -and (Test-Path "$localPath\.git")) {
         Write-Host "    Using local repo: $localPath" -ForegroundColor DarkGray
         $null = Invoke-Git -GitArgs @("fetch", "--all", "--prune") -WorkDir $localPath
+        Ensure-SarmaExclude -RepoPath $localPath
         return $localPath
     }
 
