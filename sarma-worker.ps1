@@ -191,7 +191,8 @@ Do NOT ask for confirmation. Complete the task autonomously.
         Log-Verbose "  Prompt length: $($fullPrompt.Length) chars"
         Log-Verbose "  ADO target: $adoOrg / $adoProject / $repoName"
 
-        $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath
+        $keepAlive = ($isRevise -or $isReserve)
+        $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath -KeepAlive:$keepAlive
 
         $icon = if ($result.Success) { "✓" } else { "✗" }
         Log-Step "[3/3]" "$icon Agent finished (rc=$($result.ExitCode))" $(if ($result.Success) { "Green" } else { "Red" })

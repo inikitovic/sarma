@@ -48,9 +48,17 @@ function Send-ToAgent {
 }
 
 function Invoke-CopilotAgent {
+    <#
+    .SYNOPSIS
+        Launch agency copilot in a new interactive terminal window.
+    .PARAMETER KeepAlive
+        If set, don't send Ctrl+C after .sarma-done — leave the copilot session
+        open for manual use (used by reserve/revise tasks).
+    #>
     param(
         [Parameter(Mandatory)][string]$Prompt,
-        [Parameter(Mandatory)][string]$WorkDir
+        [Parameter(Mandatory)][string]$WorkDir,
+        [switch]$KeepAlive
     )
 
     if (-not [System.IO.Path]::IsPathRooted($WorkDir)) {
@@ -79,11 +87,16 @@ function Invoke-CopilotAgent {
     $null = az account get-access-token --resource "https://storage.azure.com" 2>&1
     $null = az account get-access-token --resource "499b84ac-1321-427f-aa17-267ca6975798" 2>&1
 
-    # Launch agency copilot in a new window
+    # Source init.ps1 before agency copilot for build environment (SDK, BaseDir, etc.)
     $escapedWorkDir = $WorkDir -replace "'", "''"
-    $proc = Start-Process pwsh -ArgumentList '-Command', `
-        "Set-Location '$escapedWorkDir'; agency copilot" `
-        -PassThru
+    $initScript = Join-Path $WorkDir "init.ps1"
+    $initCmd = if (Test-Path $initScript) { ". '$($initScript -replace "'","''")'; " } else { "" }
+
+    # KeepAlive: use -NoExit so window stays open after copilot exits
+    $procArgs = @('-Command', "${initCmd}Set-Location '$escapedWorkDir'; agency copilot")
+    if ($KeepAlive) { $procArgs = @('-NoExit') + $procArgs }
+
+    $proc = Start-Process pwsh -ArgumentList $procArgs -PassThru
 
     # Wait for copilot to fully load
     Write-Host "    Waiting for copilot to load..." -ForegroundColor DarkGray
@@ -102,26 +115,21 @@ function Invoke-CopilotAgent {
     }
     Write-Host "    Copilot ready (${bootWait}s)" -ForegroundColor DarkGray
 
-    # Send commands — each call re-focuses the window via Win32 API
+    # Send commands
     Write-Host "    Sending commands..." -ForegroundColor DarkGray
 
-    # 0. Ensure input field is active (send a no-op keystroke + delete)
     Send-ToAgent -Process $proc -Keys " " -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{BACKSPACE}" -PostDelay 2
 
-    # 1. Allow all tools first (prevents permissions dialog later)
     Send-ToAgent -Process $proc -Keys "/allow-all" -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
 
-    # 2. Set model
     Send-ToAgent -Process $proc -Keys "/model claude-opus-4.6-1m" -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
 
-    # 3. Switch to autopilot mode (two Shift+Tabs) — no dialog since /allow-all was run
     Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 1
     Send-ToAgent -Process $proc -Keys "+{TAB}" -PostDelay 2
 
-    # 4. Type prompt and submit
     Send-ToAgent -Process $proc -Keys $safePrompt -PostDelay 1
     Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 1
 
@@ -141,18 +149,22 @@ function Invoke-CopilotAgent {
 
     if (Test-Path $doneFile) {
         $agentCompleted = $true
-        Write-Host "    Agent completed - shutting down copilot..." -ForegroundColor Green
         Remove-Item $doneFile -Force -ErrorAction SilentlyContinue
-        Start-Sleep 10
-        # Rapid-fire Ctrl+C twice then exit
-        $null = Focus-AgentWindow -Process $proc
-        $wshell = New-Object -ComObject WScript.Shell
-        $wshell.SendKeys("^c")
-        Start-Sleep -Milliseconds 500
-        $wshell.SendKeys("^c")
-        Start-Sleep 3
-        Send-ToAgent -Process $proc -Keys "exit" -PostDelay 1
-        Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
+
+        if ($KeepAlive) {
+            Write-Host "    Agent completed - copilot session kept alive for manual use" -ForegroundColor Green
+        } else {
+            Write-Host "    Agent completed - shutting down copilot..." -ForegroundColor Green
+            Start-Sleep 10
+            $null = Focus-AgentWindow -Process $proc
+            $wshell = New-Object -ComObject WScript.Shell
+            $wshell.SendKeys("^c")
+            Start-Sleep -Milliseconds 500
+            $wshell.SendKeys("^c")
+            Start-Sleep 3
+            Send-ToAgent -Process $proc -Keys "exit" -PostDelay 1
+            Send-ToAgent -Process $proc -Keys "{ENTER}" -PostDelay 3
+        }
     } elseif ($waited -ge $maxWait) {
         Write-Host "    Timeout - killing agent session..." -ForegroundColor Yellow
         $null = Focus-AgentWindow -Process $proc
@@ -163,11 +175,13 @@ function Invoke-CopilotAgent {
         Start-Sleep 3
     }
 
-    # Wait for exit
-    if (-not $proc.HasExited) {
-        $proc.WaitForExit(10000) | Out-Null
+    # Wait for exit (skip if KeepAlive)
+    if (-not $KeepAlive) {
         if (-not $proc.HasExited) {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $proc.WaitForExit(10000) | Out-Null
+            if (-not $proc.HasExited) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 
@@ -195,7 +209,7 @@ function Invoke-CopilotAgent {
     Remove-Item (Join-Path $WorkDir ".sarma-done") -Force -ErrorAction SilentlyContinue
 
     return [PSCustomObject]@{
-        ExitCode  = $proc.ExitCode
+        ExitCode  = if ($proc.HasExited) { $proc.ExitCode } else { 0 }
         Stdout    = "Agent session: ${duration}s"
         Stderr    = ""
         Success   = $agentCompleted
