@@ -133,9 +133,15 @@ function Process-Task {
         $isProfile = ($task.taskType -eq "profile")
 
         if ($isProfile) {
-            # Profile tasks are pure ADO data fetching — no repo needed
-            $wtPath = $env:TEMP
-            Log-Step "[1/1]" "✓ Profile task — skipping repo setup" Green
+            # Profile tasks are pure ADO data fetching — no git ops needed
+            # But Copilot still needs a repo working directory to boot (init.ps1, MCP servers)
+            $localPath = $script:SarmaConfig.LocalRepo
+            if ($localPath -and (Test-Path "$localPath\.git")) {
+                $wtPath = $localPath
+            } else {
+                $wtPath = (Get-Location).Path
+            }
+            Log-Step "[1/1]" "✓ Profile task — using $wtPath (no git ops)" Green
         } else {
             # 1. Initialize repo (use local if available, otherwise clone)
             Log-Step "[1/3]" "Initializing repo…"
