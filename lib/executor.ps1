@@ -20,7 +20,8 @@ function Invoke-CopilotAgent {
     param(
         [Parameter(Mandatory)][string]$Prompt,
         [Parameter(Mandatory)][string]$WorkDir,
-        [switch]$KeepAlive
+        [switch]$KeepAlive,
+        [switch]$SkipInit
     )
 
     if (-not [System.IO.Path]::IsPathRooted($WorkDir)) {
@@ -66,7 +67,7 @@ This signals the orchestrator that you are done. Do NOT skip this step.
     # Build command line for pwsh inside ConPTY
     $escapedWorkDir = $WorkDir -replace "'", "''"
     $initScript = Join-Path $WorkDir "init.ps1"
-    $initCmd = if (Test-Path $initScript) { ". '$($initScript -replace "'","''")'; " } else { "" }
+    $initCmd = if (-not $SkipInit -and (Test-Path $initScript)) { ". '$($initScript -replace "'","''")'; " } else { "" }
     $cmdLine = "pwsh -NoLogo -Command `"${initCmd}Set-Location '$escapedWorkDir'; agency copilot`""
 
     $pty = New-Object SarmaConPty

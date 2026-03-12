@@ -205,7 +205,8 @@ Do NOT ask for confirmation. Complete the task autonomously.
         Log-Verbose "  ADO target: $adoOrg / $adoProject / $repoName"
 
         $keepAlive = ($isRevise -or $isReserve)
-        $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath -KeepAlive:$keepAlive
+        $skipInit = ($isProfile -or $isReview)
+        $result = Invoke-CopilotAgent -Prompt $fullPrompt -WorkDir $wtPath -KeepAlive:$keepAlive -SkipInit:$skipInit
 
         $icon = if ($result.Success) { "✓" } else { "✗" }
         Log-Step "[3/3]" "$icon Agent finished (rc=$($result.ExitCode))" $(if ($result.Success) { "Green" } else { "Red" })
